@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Test: Re‑Sign (flatten)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color-scheme: light dark; }
+    body { margin: 16px; font-size: 14px; }
+    h1 { margin: 0 0 12px; font-size: 1.2rem; }
+    .row { display: grid; grid-template-columns: 140px 1fr; gap: 8px; align-items: center; margin: 8px 0; }
+    input[type="file"] { padding: 6px 0; }
+    button { padding: 8px 12px; border-radius: 10px; border: 1px solid #6665; background: #2b73ff; color: #fff; cursor: pointer; }
+    #status { margin-top: 10px; min-height: 1.2em; }
+    .ok { color: #1a7f37; } .err { color: #b00020; }
+    #result { margin-top: 16px; display: none; }
+    #viewer { width: 100%; height: 420px; border: 1px solid #9993; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <p><a href="index.html">← Back to index</a></p>
+  <h1>Test: Re‑Sign (flatten) (/sign/pdf-resign-flatten)</h1>
+  <div class="row">
+    <label for="pdf">PDF file</label>
+    <input id="pdf" type="file" accept="application/pdf" />
+  </div>
+  <div class="row">
+    <label for="remember">Session</label>
+    <label><input id="remember" type="checkbox" /> Remember PIN for this session</label>
+  </div>
+  <div class="row">
+    <label for="topLeftMode">Top-left coords</label>
+    <div>
+      <label><input id="topLeftMode" type="checkbox" checked /> Use top-left coordinates (PDF points)</label>
+      <div style="display:flex; gap:8px; margin-top:6px;">
+        <label>Left: <input id="leftPt" type="number" step="1" value="40" style="width:90px"></label>
+        <label>Top: <input id="topPt" type="number" step="1" value="40" style="width:90px"></label>
+        <label>Page: <input id="pageNum" type="text" placeholder="last" style="width:90px"></label>
+      </div>
+      <div style="font-size:12px; color:#666; margin-top:4px;">Only Left,Top are sent. Size auto-fits based on signature text. Page defaults to last.</div>
+    </div>
+  </div>
+  <div class="row">
+    <label>Action</label>
+    <button id="resignBtn" disabled>Re‑Sign (flatten)</button>
+  </div>
+  <div id="status"></div>
+  <div id="result">
+    <p class="ok"><strong>Re‑signed!</strong> <a id="dl" download="signed.pdf">Download signed.pdf</a></p>
+    <object id="viewer" type="application/pdf"></object>
+  </div>
+
+  <script src="./client/dsc-agent-client.iife.js"></script>
+  <script>
+    const els = {
+      file: document.getElementById('pdf'),
+      resign: document.getElementById('resignBtn'),
+      status: document.getElementById('status'),
+      result: document.getElementById('result'),
+      dl: document.getElementById('dl'),
+      viewer: document.getElementById('viewer'),
+      topLeftMode: document.getElementById('topLeftMode'),
+      leftPt: document.getElementById('leftPt'),
+      topPt: document.getElementById('topPt'),
+      pageNum: document.getElementById('pageNum'),
+    };
+    const FIXED_REASON = 'Signed via DSC agent';
+    let agent = null;
+    function setStatus(t, ok=null){ els.status.textContent = t||''; els.status.className = ok===true?'ok': ok===false?'err':''; }
+    async function discover(){
+      try { agent = await window.DSCAgent.discover(); els.resign.disabled = false; setStatus('Agent connected', true); }
+      catch(e){ setStatus('Agent not found. Start: node agent/dsc-agent.js', false); }
+    }
+    els.resign.addEventListener('click', async () => {
+      try {
+        setStatus('');
+        if (!agent) throw new Error('Agent not connected');
+        const f = els.file.files[0]; if (!f) throw new Error('Choose a PDF first');
+        const pdfBytes = await window.DSCAgent.utils.fileToArrayBuffer(f);
+        const b64 = window.DSCAgent.utils.toBase64(pdfBytes);
+        const info = await agent.health().catch(() => ({}));
+        const promptAvailable = !!(info && info.promptAvailable);
+        const remember = !!document.getElementById('remember').checked;
+        const body = { pdfBase64: b64, reason: FIXED_REASON, includeESS: true, embedIntermediates: true, stampPrevious: true };
+        if (els.topLeftMode.checked) {
+          body.rectMode = 'top-left';
+          const left = parseInt(els.leftPt.value, 10) || 0;
+          const top = parseInt(els.topPt.value, 10) || 0;
+          body.rect = [left, top];
+          const pRaw = (els.pageNum.value || '').trim();
+          if (pRaw && pRaw.toLowerCase() !== 'last') {
+            const p = parseInt(pRaw, 10);
+            if (Number.isFinite(p) && p > 0) body.page = p; else body.page = 'last';
+          } else { body.page = 'last'; }
+        }
+        if (promptAvailable) { body.requirePin = true; if (remember) body.rememberSessionPin = true; } else { const p = window.prompt('Enter token PIN to re‑sign:', ''); if (!p) throw new Error('PIN required'); body.pin = String(p).trim(); }
+        els.resign.disabled = true; setStatus('Re‑signing...');
+        const r = await fetch(agent.base + '/sign/pdf-resign-flatten', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify(body), credentials:'include' });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j || !j.ok) throw new Error((j && j.message) || ('HTTP ' + r.status));
+        const outB64 = j.signedPdfBase64;
+        els.dl.href = 'data:application/pdf;base64,' + outB64;
+        els.result.style.display = 'block';
+        els.viewer.data = 'data:application/pdf;base64,' + outB64;
+        setStatus('Done.', true);
+      } catch(e){ setStatus(e.message || String(e), false); }
+      finally { els.resign.disabled = false; }
+    });
+    discover();
+  </script>
+</body>
+</html>

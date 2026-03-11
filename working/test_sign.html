@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DSC Agent — Re‑Sign (Flatten) Tester</title>
+    <style>
+      :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color-scheme: light dark; }
+      body { margin: 16px; font-size: 14px; }
+      h1 { margin: 0 0 12px; font-size: 1.3rem; }
+      .card { max-width: 760px; border: 1px solid #9993; border-radius: 10px; padding: 12px; }
+      .row { display: grid; grid-template-columns: 160px 1fr; gap: 8px; align-items: center; margin: 8px 0; }
+      .row > label { color: #555; }
+      input[type="text"] { width: 100%; padding: 6px 8px; border-radius: 8px; border: 1px solid #9996; }
+      input[type="file"] { padding: 6px 0; }
+      .checks { display: flex; gap: 12px; align-items: center; }
+      button { padding: 8px 12px; border-radius: 10px; border: 1px solid #6665; background: #2b73ff; color: #fff; cursor: pointer; }
+      button.ghost { background: transparent; color: inherit; }
+      button[disabled] { opacity: .6; cursor: not-allowed; }
+      .ok { color: #1a7f37; }
+      .err { color: #b00020; }
+      #status { min-height: 1.4em; }
+      #viewer { width: 100%; height: 480px; border: 1px solid #9993; border-radius: 8px; }
+      small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    </style>
+  </head>
+  <body>
+    <h1>Re‑Sign (Flatten Previous) — Minimal Tester</h1>
+    <div class="card">
+      <div class="row">
+        <label>Local Agent</label>
+        <div>
+          <div id="agentState"><em>Discovering…</em></div>
+          <div><small class="mono" id="agentInfo"></small></div>
+        </div>
+      </div>
+
+      <div class="row"><label>PDF</label><input id="pdf" type="file" accept="application/pdf" /></div>
+      <div class="row"><label>Reason</label><input id="reason" type="text" placeholder="Signed via DSC Agent" /></div>
+      <div class="row">
+        <label>Pick Area</label>
+        <div>
+          <canvas id="preview" width="680" height="480" style="border:1px dashed #999; border-radius:6px; background:#fff"></canvas>
+          <div style="font-size:12px; color:#555; margin-top:4px">Drag to draw rectangle. Page: <select id="pageSel"></select> <span id="rectInfo"></span></div>
+        </div>
+      </div>
+      <div class="row">
+        <label>Placement</label>
+        <div class="checks">
+          <label title="Force testing placement to top-left of the page"><input id="topLeft" type="checkbox" /> Top-left test</label>
+        </div>
+      </div>
+
+      <div class="row"><label>Status</label><div id="status"></div></div>
+      <object id="viewer" type="application/pdf"></object>
+
+      <div class="row">
+        <label></label>
+        <div class="checks">
+          <button id="resignBtn" disabled>Re‑Sign (flatten + stamp)</button>
+          <button id="saveBtn" class="ghost" disabled>Save</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module">
+      const els = {
+        file: document.getElementById('pdf'),
+        reason: document.getElementById('reason'),
+        status: document.getElementById('status'),
+        agentState: document.getElementById('agentState'),
+        agentInfo: document.getElementById('agentInfo'),
+        viewer: document.getElementById('viewer'),
+        resign: document.getElementById('resignBtn'),
+        save: document.getElementById('saveBtn'),
+        preview: document.getElementById('preview'),
+        pageSel: document.getElementById('pageSel'),
+        rectInfo: document.getElementById('rectInfo'),
+      };
+
+      let agent = null;
+      let currentB64 = '';
+
+      function setStatus(msg, ok = null) {
+        els.status.textContent = msg || '';
+        els.status.className = ok === true ? 'ok' : ok === false ? 'err' : '';
+      }
+
+      function b64ToBlob(b64, mime) {
+        const byteChars = atob(b64.replace(/^data:[^,]+,/, ''));
+        const byteNumbers = new Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+        return new Blob([new Uint8Array(byteNumbers)], { type: mime || 'application/octet-stream' });
+      }
+      async function fileToArrayBuffer(file) {
+        return new Promise((resolve, reject) => { const fr = new FileReader(); fr.onload = () => resolve(fr.result); fr.onerror = reject; fr.readAsArrayBuffer(file); });
+      }
+      function toBase64(ab) {
+        const bytes = new Uint8Array(ab); let s = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        return btoa(s);
+      }
+      function normalizeBase64(s) { return String(s || '').replace(/^data:[^,]+,/, '').replace(/\s+/g, ''); }
+
+      function updateViewerAndDownload(b64) {
+        try { els.viewer.data = 'data:application/pdf;base64,' + b64; } catch {}
+        els.save.disabled = !b64;
+      }
+
+      function getQueryParam(name) { try { return (new URL(window.location.href)).searchParams.get(name); } catch { return null; } }
+      async function discoverAgent() {
+        // Discovery order: explicit ?base=, then ?port=, else 18080 defaults
+        const explicitBase = getQueryParam('base');
+        const portParam = getQueryParam('port');
+        const bases = [];
+        if (explicitBase) {
+          bases.push(explicitBase);
+        } else if (portParam && /^\d+$/.test(portParam)) {
+          bases.push(`http://127.0.0.1:${portParam}`);
+          bases.push(`http://localhost:${portParam}`);
+        } else {
+          bases.push('http://127.0.0.1:18080');
+          bases.push('http://localhost:18080');
+        }
+        for (const base of bases) {
+          try {
+            const r = await fetch(base + '/health', { credentials: 'include' });
+            const j = await r.json();
+            if (j && j.ok) {
+              agent = { base };
+              els.agentState.innerHTML = '<span class="ok">Connected</span>';
+              els.agentInfo.textContent = `Agent: ${base} | DLL: ${j.dll || 'n/a'} | Slot: ${j.slotPresent ? 'present' : 'no token'}`;
+              els.resign.disabled = false;
+              return;
+            }
+          } catch {}
+        }
+        throw new Error('Local agent not found. Start: node agent/dsc-agent.js');
+      }
+
+      // --- PDF.js minimal renderer for rectangle picking ---
+      let pdfDoc = null; let pdfPages = 0; let pdfData = null; let rectNorm = null;
+      const pdfjsUrl = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.7.76/pdf.min.js';
+      async function ensurePdfJs() {
+        if (window.pdfjsLib) return;
+        await new Promise((resolve, reject) => { const s = document.createElement('script'); s.src = pdfjsUrl; s.onload = resolve; s.onerror = reject; document.head.appendChild(s); });
+        if (!window.pdfjsLib) throw new Error('Failed to load pdf.js');
+      }
+      async function renderPageToCanvas(pageNum) {
+        if (!pdfDoc) return;
+        const page = await pdfDoc.getPage(pageNum);
+        const canvas = els.preview; const ctx = canvas.getContext('2d');
+        const viewport = page.getViewport({ scale: Math.min(canvas.width / page.view[2], canvas.height / page.view[3]) });
+        canvas.width = Math.floor(viewport.width); canvas.height = Math.floor(viewport.height);
+        const renderContext = { canvasContext: ctx, viewport };
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        await page.render(renderContext).promise;
+        drawRect();
+      }
+      let drag = null; function drawRect() {
+        const c = els.preview; const ctx = c.getContext('2d');
+        const w = c.width, h = c.height;
+        ctx.save();
+        ctx.strokeStyle = '#2b73ff'; ctx.lineWidth = 2; ctx.setLineDash([6,4]);
+        if (drag) { const x = Math.min(drag.sx, drag.cx); const y = Math.min(drag.sy, drag.cy); const rw = Math.abs(drag.cx-drag.sx); const rh = Math.abs(drag.cy-drag.sy); ctx.strokeRect(x,y,rw,rh); rectNorm = [x/w, y/h, rw/w, rh/h]; els.rectInfo.textContent = `rect: ${x|0},${y|0} ${rw|0}x${rh|0}`; }
+        else if (rectNorm) { const [nx,ny,nw,nh] = rectNorm; ctx.strokeRect(nx*w, ny*h, nw*w, nh*h); }
+        ctx.restore();
+      }
+      els.preview.addEventListener('mousedown', (e) => { const r = els.preview.getBoundingClientRect(); drag = { sx: e.clientX - r.left, sy: e.clientY - r.top, cx: e.clientX - r.left, cy: e.clientY - r.top }; drawRect(); });
+      window.addEventListener('mousemove', (e) => { if (!drag) return; const r = els.preview.getBoundingClientRect(); drag.cx = e.clientX - r.left; drag.cy = e.clientY - r.top; drawRect(); });
+      window.addEventListener('mouseup', () => { if (!drag) return; if (Math.abs(drag.cx-drag.sx) < 4 || Math.abs(drag.cy-drag.sy) < 4) rectNorm = null; drag = null; drawRect(); });
+
+      els.pageSel.addEventListener('change', async () => { const p = parseInt(els.pageSel.value,10)||1; await renderPageToCanvas(p); });
+
+      els.file.addEventListener('change', async () => {
+        try {
+          const f = els.file.files && els.file.files[0];
+          if (!f) return;
+          const ab = await fileToArrayBuffer(f); pdfData = new Uint8Array(ab);
+          currentB64 = toBase64(ab); rectNorm = null;
+          updateViewerAndDownload(currentB64);
+          // Load via pdf.js and render first page
+          await ensurePdfJs();
+          pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.7.76/pdf.worker.min.js';
+          pdfDoc = await pdfjsLib.getDocument({ data: pdfData }).promise; pdfPages = pdfDoc.numPages;
+          els.pageSel.innerHTML = Array.from({length: pdfPages}, (_,i)=>`<option value="${i+1}">${i+1}</option>`).join('');
+          await renderPageToCanvas(1);
+          setStatus('Loaded PDF.');
+        } catch (e) { setStatus(e.message || String(e), false); }
+      });
+
+      els.resign.addEventListener('click', async () => {
+        try {
+          setStatus('Re‑signing (flatten + stamp)…');
+          if (!agent) throw new Error('Agent not connected');
+          const f = els.file.files && els.file.files[0];
+          if (!f) throw new Error('Choose a PDF first');
+
+          // Check prompt capability
+          const info = await fetch(agent.base + '/health', { credentials: 'include' }).then(r => r.json()).catch(() => ({}));
+          const promptAvailable = !!(info && info.promptAvailable);
+
+          const body = {
+            pdfBase64: normalizeBase64(currentB64),
+            reason: els.reason.value.trim() || 'Signed via DSC Agent',
+            stampPrevious: true,
+          };
+          if (pdfDoc && rectNorm) {
+            const p = parseInt(els.pageSel.value,10)||1;
+            body.page = p; // 1-based
+            body.rectNorm = rectNorm; // [nx,ny,nw,nh] in canvas coords; server maps to PDF page size
+          }
+          if (document.getElementById('topLeft').checked) body.forceTopLeft = true;
+          if (promptAvailable) {
+            body.requirePin = true;
+          } else {
+            const pin = window.prompt('Enter token PIN to sign:', '');
+            if (!pin) throw new Error('PIN required');
+            body.pin = pin.trim();
+          }
+
+          const r = await fetch(agent.base + '/sign/pdf-resign-flatten', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), credentials: 'include'
+          });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok || !j || !j.ok) throw new Error((j && j.message) || ('HTTP ' + r.status));
+          currentB64 = j.signedPdfBase64;
+          updateViewerAndDownload(currentB64);
+          setStatus('Re‑signed.', true);
+        } catch (e) { setStatus(e.message || String(e), false); }
+      });
+
+      els.save.addEventListener('click', () => {
+        try {
+          if (!currentB64) return;
+          const blob = b64ToBlob(currentB64, 'application/pdf');
+          const a = document.createElement('a');
+          const url = URL.createObjectURL(blob);
+          a.href = url; a.download = 'signed.pdf';
+          document.body.appendChild(a); a.click();
+          setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 250);
+        } catch {}
+      });
+
+      (async () => { try { await discoverAgent(); } catch (e) { els.agentState.innerHTML = '<span class="err">Not found</span>'; els.agentInfo.textContent = e.message; } })();
+    </script>
+  </body>
+  </html>

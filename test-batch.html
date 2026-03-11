@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Test Batch Sign</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color-scheme: light dark; }
+    body { margin: 16px; font-size: 14px; }
+    h1 { margin: 0 0 12px; font-size: 1.2rem; }
+    .row { display: grid; grid-template-columns: 140px 1fr; gap: 8px; align-items: center; margin: 8px 0; }
+    input[type="file"] { padding: 6px 0; }
+    button { padding: 8px 12px; border-radius: 10px; border: 1px solid #6665; background: #2b73ff; color: #fff; cursor: pointer; }
+    #status { margin-top: 10px; min-height: 1.2em; }
+    .ok { color: #1a7f37; } .err { color: #b00020; }
+    #results { margin-top: 16px; }
+    .item { margin: 8px 0; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <p><a href="index.html">← Back to index</a></p>
+  <h1>Test: Batch Sign (/sign/pdf-batch)</h1>
+  <div class="row">
+    <label for="pdfs">PDF files</label>
+    <input id="pdfs" type="file" accept="application/pdf" multiple />
+  </div>
+  <div class="row">
+    <label for="remember">Session</label>
+    <label><input id="remember" type="checkbox" /> Remember PIN for this session</label>
+  </div>
+  <div class="row">
+    <label for="allPages">All pages</label>
+    <label><input id="allPages" type="checkbox" /> Stamp text on all pages</label>
+  </div>
+  <div class="row">
+    <label for="topLeftMode">Top-left coords</label>
+    <div>
+      <label><input id="topLeftMode" type="checkbox" checked /> Use top-left coordinates (PDF points)</label>
+      <div style="display:flex; gap:8px; margin-top:6px;">
+        <label>Left: <input id="leftPt" type="number" step="1" value="40" style="width:90px"></label>
+        <label>Top: <input id="topPt" type="number" step="1" value="40" style="width:90px"></label>
+        <label>Page: <input id="pageNum" type="text" placeholder="last" style="width:90px"></label>
+      </div>
+      <div style="font-size:12px; color:#666; margin-top:4px;">Only Left,Top are sent. Size auto-fits; applied to all PDFs. Page defaults to last.</div>
+    </div>
+  </div>
+  <div class="row">
+    <label>Action</label>
+    <button id="batchBtn" disabled>Sign Batch</button>
+  </div>
+  <div id="status"></div>
+  <div id="results"></div>
+
+  <script src="./client/time-provider.js"></script>
+  <script src="./client/dsc-agent-client.iife.js"></script>
+  <script>
+    const els = {
+      files: document.getElementById('pdfs'),
+      go: document.getElementById('batchBtn'),
+      status: document.getElementById('status'),
+      results: document.getElementById('results'),
+      topLeftMode: document.getElementById('topLeftMode'),
+      leftPt: document.getElementById('leftPt'),
+      topPt: document.getElementById('topPt'),
+      pageNum: document.getElementById('pageNum'),
+    };
+    const FIXED_REASON = 'Signed via DSC agent';
+    let agent = null;
+    function setStatus(t, ok=null){ els.status.textContent = t||''; els.status.className = ok===true?'ok': ok===false?'err':''; }
+    async function discover(){
+      try { agent = await window.DSCAgent.discover(); els.go.disabled = false; setStatus('Agent connected', true); }
+      catch(e){ setStatus('Agent not found. Start: node agent/dsc-agent.js', false); }
+    }
+    async function filesToB64s(list){
+      const arr = [];
+      for (const f of list) { const ab = await window.DSCAgent.utils.fileToArrayBuffer(f); arr.push(window.DSCAgent.utils.toBase64(ab)); }
+      return arr;
+    }
+    els.go.addEventListener('click', async () => {
+      try {
+        setStatus(''); els.results.innerHTML = '';
+        if (!agent) throw new Error('Agent not connected');
+        const list = els.files.files; if (!list || !list.length) throw new Error('Choose one or more PDFs');
+        const b64s = await filesToB64s(list);
+        const info = await agent.health().catch(() => ({}));
+        const promptAvailable = !!(info && info.promptAvailable);
+        const remember = !!document.getElementById('remember').checked;
+        const body = { pdfs: b64s, reason: FIXED_REASON, includeESS: true, embedIntermediates: true };
+        if (document.getElementById('allPages').checked) body.stampAllPages = true;
+        if (els.topLeftMode.checked) {
+          body.rectMode = 'top-left';
+          const left = parseInt(els.leftPt.value, 10) || 0;
+          const top = parseInt(els.topPt.value, 10) || 0;
+          body.rect = [left, top];
+          const pRaw = (els.pageNum.value || '').trim();
+          if (pRaw && pRaw.toLowerCase() !== 'last') {
+            const p = parseInt(pRaw, 10);
+            if (Number.isFinite(p) && p > 0) body.page = p; else body.page = 'last';
+          } else { body.page = 'last'; }
+        }
+        if (promptAvailable) { body.requirePin = true; if (remember) body.rememberSessionPin = true; } else { const p = window.prompt('Enter token PIN to sign batch:', ''); if (!p) throw new Error('PIN required'); body.pin = String(p).trim(); }
+        els.go.disabled = true;
+        setStatus('Signing...');
+        // if (!window.DSCTime || typeof window.DSCTime.fetch !== 'function') {
+        //   throw new Error('Timestamp provider unavailable');
+        // }
+        // body.signingTime = await window.DSCTime.fetch();
+        setStatus('Signing batch...');
+        const r = await fetch(agent.base + '/sign/pdf-batch', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify(body), credentials:'include' });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j || j.ok !== true) throw new Error((j && j.message) || ('HTTP ' + r.status));
+        const results = Array.isArray(j.results) ? j.results : [];
+        results.forEach((item, i) => {
+          const div = document.createElement('div'); div.className = 'item';
+          if (item && item.ok && item.signedPdfBase64) {
+            const a = document.createElement('a'); a.textContent = `Download signed_${i+1}.pdf`; a.download = `signed_${i+1}.pdf`; a.href = 'data:application/pdf;base64,' + item.signedPdfBase64; div.appendChild(a);
+          } else {
+            div.innerHTML = `<span class="err">Failed</span> <span class="mono">${(item && item.message) || 'Unknown error'}</span>`;
+          }
+          els.results.appendChild(div);
+        });
+        setStatus('Done.', true);
+      } catch(e){ setStatus(e.message || String(e), false); }
+      finally { els.go.disabled = false; }
+    });
+    discover();
+  </script>
+</body>
+</html>

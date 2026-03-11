@@ -1,0 +1,249 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>DSC PDF Signer (Local Agent)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color-scheme: light dark; }
+  body { margin: 24px; }
+  h1 { margin: 0 0 12px; font-size: 1.4rem; }
+  .card { max-width: 720px; border: 1px solid #9993; border-radius: 12px; padding: 16px; }
+  .row { display: grid; grid-template-columns: 160px 1fr; gap: 10px; align-items: center; margin: 10px 0; }
+  .row > label { color: #555; }
+  input[type="text"], input[type="password"] { width: 100%; padding: 8px; border-radius: 8px; border: 1px solid #9996; }
+  input[type="file"] { padding: 6px 0; }
+  .checks { display: flex; gap: 16px; }
+  button { padding: 10px 16px; border-radius: 10px; border: 1px solid #6665; background: #2b73ff; color: #fff; cursor: pointer; }
+  button[disabled] { opacity: .6; cursor: not-allowed; }
+  #status { margin-top: 12px; min-height: 1.4em; color: #444; }
+  .ok { color: #1a7f37; }
+  .err { color: #b00020; }
+  #result { margin-top: 16px; display: none; }
+  #viewer { width: 100%; height: 480px; border: 1px solid #9993; border-radius: 8px; }
+  small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+</head>
+<body>
+  <h1>DSC PDF Signer (via Local Agent)</h1>
+  <div class="card">
+    <div class="row">
+      <label for="pdf">PDF file</label>
+      <input id="pdf" type="file" accept="application/pdf" />
+    </div>
+    <div class="row">
+      <label for="reason">Reason</label>
+      <input id="reason" type="text" placeholder="Signed via DSC Agent" />
+    </div>
+    <div class="row">
+      <label>Options</label>
+      <div class="checks">
+        <label><input id="ess" type="checkbox" checked /> Include ESSCertIDv2</label>
+        <label><input id="interm" type="checkbox" /> Embed intermediates</label>
+      </div>
+    </div>
+    <div class="row">
+      <label for="stime">Signing time</label>
+      <input id="stime" type="text" placeholder="YYYY-MM-DD HH:mm:ss (optional)" />
+    </div>
+    <div class="row">
+      <label for="remember">Session</label>
+      <div class="checks">
+        <label><input id="remember" type="checkbox" /> Remember PIN for this session</label>
+      </div>
+    </div>
+    <div class="row">
+      <label for="pinRequired">PIN requirement</label>
+      <div class="checks">
+        <label><input id="pinRequired" type="checkbox" checked /> Require PIN each signing (prompt by tool)</label>
+      </div>
+    </div>
+    <div class="row">
+      <label>Local Agent</label>
+      <div>
+        <span id="agentState"><em>Discovering…</em></span>
+        <div><small class="mono" id="agentInfo"></small></div>
+      </div>
+    </div>
+    <div class="row">
+      <label></label>
+      <button id="signBtn" disabled>Sign PDF</button>
+    </div>
+    <div id="status"></div>
+
+    <div id="result">
+      <p class="ok"><strong>Signed!</strong> <a id="dl" download="signed.pdf">Download signed.pdf</a></p>
+      <object id="viewer" type="application/pdf"></object>
+    </div>
+  </div>
+
+<script type="module">
+  // ---- tiny browser SDK (inline) ----
+  const DSC = (() => {
+    const ports = [18080, 18081, 18082];
+    async function discover(timeoutMs = 800) {
+      for (const p of ports) {
+        try {
+          const ctl = new AbortController();
+          const t = setTimeout(() => ctl.abort(), timeoutMs);
+          const r = await fetch(`http://127.0.0.1:${p}/health`, { signal: ctl.signal, credentials: 'include' });
+          clearTimeout(t);
+          if (r.ok) {
+            await r.json(); // we could show version/dll if desired
+            return createClient(`http://127.0.0.1:${p}`);
+          }
+        } catch {}
+      }
+      throw new Error('DSC Agent not found on localhost. Start dsc-agent.js.');
+    }
+    function b64FromArrayBuffer(buf) {
+      const bytes = new Uint8Array(buf);
+      let s = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
+      return btoa(s);
+    }
+    function createClient(base) {
+      return {
+        base,
+        async health() {
+          const r = await fetch(base + '/health');
+          return r.json();
+        },
+        async signPdf(arrayBuffer, { reason = 'Signed via DSC Agent', includeESS = true, embedIntermediates = false, signingTime = '', pin = '', requirePin } = {}) {
+          const body = {
+            pdfBase64: b64FromArrayBuffer(arrayBuffer),
+            reason, includeESS, embedIntermediates, signingTime, pin
+          };
+          if (requirePin === true) body.requirePin = true;
+          const r = await fetch(base + '/sign/pdf', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+            credentials: 'include'
+          });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok || !j.ok) throw new Error(j.message || ('HTTP ' + r.status));
+          return j; // { signedPdfBase64 }
+        }
+      };
+    }
+    return { discover };
+  })();
+
+  // ---- UI wiring ----
+  const els = {
+    file: document.getElementById('pdf'),
+    reason: document.getElementById('reason'),
+    ess: document.getElementById('ess'),
+    interm: document.getElementById('interm'),
+    stime: document.getElementById('stime'),
+    pinRequired: document.getElementById('pinRequired'),
+    sign: document.getElementById('signBtn'),
+    status: document.getElementById('status'),
+    agentState: document.getElementById('agentState'),
+    agentInfo: document.getElementById('agentInfo'),
+    result: document.getElementById('result'),
+    dl: document.getElementById('dl'),
+    viewer: document.getElementById('viewer'),
+  };
+
+  let agent = null;
+
+  function setStatus(msg, ok = null) {
+    els.status.textContent = msg || '';
+    els.status.className = ok === true ? 'ok' : ok === false ? 'err' : '';
+  }
+
+  async function discoverAgent() {
+    try {
+      agent = await DSC.discover();
+      const info = await agent.health().catch(() => ({}));
+      els.agentState.innerHTML = '<span class="ok">Connected</span>';
+      els.agentInfo.textContent = `Agent: ${agent.base} | DLL: ${info.dll || 'n/a'} | Slot: ${info.slotPresent ? 'present' : 'no token'}`;
+      els.sign.disabled = false;
+    } catch (e) {
+      els.agentState.innerHTML = '<span class="err">Not found</span>';
+      els.agentInfo.textContent = 'Start the local agent: node dsc-agent.js';
+      els.sign.disabled = true;
+      setStatus(e.message, false);
+    }
+  }
+
+
+  async function toArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = reject;
+      fr.readAsArrayBuffer(file);
+    });
+  }
+
+  els.sign.addEventListener('click', async () => {
+    try {
+      setStatus('');
+      if (!agent) throw new Error('Agent not connected');
+      const file = els.file.files[0];
+      if (!file) throw new Error('Choose a PDF file first');
+      if (file.type && !/pdf/i.test(file.type)) {
+        throw new Error('Selected file is not a PDF');
+      }
+      els.sign.disabled = true;
+      setStatus('Signing… please authorize on your token if prompted…');
+
+      const pdfBytes = await toArrayBuffer(file);
+
+      const wantPromptEachTime = !!els.pinRequired.checked;
+      const remember = !!document.getElementById('remember').checked;
+      let savedPin = sessionStorage.getItem('DSC_SESSION_PIN') || '';
+      if (remember && !savedPin) {
+        const entered = window.prompt('Enter token PIN once to remember for this session (optional):', '');
+        if (entered && entered.trim()) {
+          savedPin = entered.trim();
+          try { sessionStorage.setItem('DSC_SESSION_PIN', savedPin); } catch {}
+        }
+      } else if (!remember) {
+        try { sessionStorage.removeItem('DSC_SESSION_PIN'); } catch {}
+        savedPin = '';
+      }
+
+      const requirePin = savedPin ? false : wantPromptEachTime;
+
+      const j = await agent.signPdf(pdfBytes, {
+        reason: els.reason.value.trim() || 'Signed via DSC Agent',
+        includeESS: els.ess.checked,
+        embedIntermediates: els.interm.checked,
+        signingTime: els.stime.value.trim(),   // optional
+        pin: savedPin,
+        requirePin
+      });
+
+      const b64 = j.signedPdfBase64;
+      els.dl.href = 'data:application/pdf;base64,' + b64;
+      els.result.style.display = 'block';
+
+      // Try to preview (some browsers block very large data URLs)
+      els.viewer.data = 'data:application/pdf;base64,' + b64;
+
+      setStatus('Done.', true);
+    } catch (e) {
+      setStatus(e.message || String(e), false);
+    } finally {
+      els.sign.disabled = false;
+    }
+  });
+
+  // bootstrap
+  discoverAgent();
+  try { if (sessionStorage.getItem('DSC_SESSION_PIN')) document.getElementById('remember').checked = true; } catch {}
+</script>
+</body>
+</html>
+
+
+
+
+
+

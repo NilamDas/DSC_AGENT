@@ -1,0 +1,30 @@
+{
+   "name": "dsc-agent",
+   "version": "1.0.0",
+   "private": true,
+   "type": "commonjs",
+   "scripts": {
+      "start": "node agent/dsc-agent.js",
+      "dev": "node agent/dsc-agent.js",
+      "build:win": "cd electron-app && npm run build"
+   },
+   "dependencies": {
+      "@signpdf/placeholder-pdf-lib": "^3.2.6",
+      "@signpdf/placeholder-plain": "^3.2.5",
+      "@signpdf/signpdf": "^3.2.5",
+      "@signpdf/utils": "^3.2.4",
+      "asn1js": "^3.0.6",
+      "cors": "^2.8.5",
+      "dotenv": "^17.2.1",
+      "express": "^5.1.0",
+      "multer": "^1.4.5-lts.1",
+      "pdf-lib": "^1.17.1",
+      "pkcs11js": "^2.1.6",
+      "pkijs": "^3.2.5",
+      "bytenode": "^1.5.7"
+   },
+   "devDependencies": {
+      "esbuild": "^0.27.3",
+      "javascript-obfuscator": "^5.3.0"
+   }
+}

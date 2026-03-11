@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DSC Agent Control Panel</title>
+    <style>
+      :root {
+        --grey-50: #fafafa;
+        --grey-100: #f5f5f5;
+        --grey-200: #eeeeee;
+        --grey-300: #e0e0e0;
+        --grey-400: #bdbdbd;
+        --grey-500: #9e9e9e;
+        --grey-600: #757575;
+        --grey-700: #616161;
+        --grey-800: #424242;
+        --grey-900: #333333;
+        --white: #ffffff;
+        
+        /* Status colors - subtle and professional */
+        --success: #2e7d32;
+        --success-bg: #e8f5e9;
+        --success-border: #81c784;
+        --warning: #f57c00;
+        --warning-bg: #fff3e0;
+        --warning-border: #ffb74d;
+        --error: #c62828;
+        --error-bg: #ffebee;
+        --error-border: #e57373;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        background: var(--grey-200);
+        color: var(--grey-900);
+        line-height: 1.5;
+        padding: 16px;
+      }
+
+      .container {
+        max-width: 900px;
+        margin: 0 auto;
+        background: var(--white);
+        border: 1px solid var(--grey-300);
+        border-radius: 3px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      }
+
+      /* Header */
+      .header {
+        background: linear-gradient(to bottom, var(--grey-900), #2a2a2a);
+        color: var(--white);
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--grey-800);
+      }
+
+      .header h1 {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+
+      /* Content */
+      .content {
+        padding: 14px;
+      }
+
+      /* Section */
+      .section {
+        border: 1px solid var(--grey-300);
+        background: var(--white);
+        margin-bottom: 12px;
+        border-radius: 3px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+      }
+
+      .section-header {
+        padding: 9px 13px;
+        background: linear-gradient(to bottom, var(--grey-50), #fefefe);
+        border-bottom: 1px solid var(--grey-300);
+      }
+
+      .section-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--grey-900);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .section-body {
+        padding: 13px;
+      }
+
+      /* Status Grid */
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+
+      .status-item {
+        padding: 11px;
+        border: 1px solid var(--grey-300);
+        background: var(--white);
+        border-radius: 3px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        transition: box-shadow 0.2s ease;
+      }
+
+      .status-item:hover {
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+      }
+
+      .status-label {
+        font-size: 10px;
+        color: var(--grey-600);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 6px;
+        font-weight: 600;
+      }
+
+      .status-value {
+        font-size: 13px;
+        color: var(--grey-900);
+        font-weight: 500;
+      }
+
+      /* Badge with status colors */
+      .badge {
+        display: inline-block;
+        padding: 3px 9px;
+        font-size: 11px;
+        font-weight: 600;
+        border: 1px solid;
+        border-radius: 3px;
+      }
+
+      .badge.ok {
+        color: var(--success);
+        background: var(--success-bg);
+        border-color: var(--success-border);
+      }
+
+      .badge.err {
+        color: var(--error);
+        background: var(--error-bg);
+        border-color: var(--error-border);
+      }
+
+      .badge.warn {
+        color: var(--warning);
+        background: var(--warning-bg);
+        border-color: var(--warning-border);
+      }
+
+      /* Form */
+      .form-group {
+        margin-bottom: 13px;
+      }
+
+      .form-group:last-child {
+        margin-bottom: 0;
+      }
+
+      label {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--grey-900);
+        margin-bottom: 6px;
+        position: relative;
+      }
+
+      input[type="text"],
+      input[type="password"],
+      select {
+        width: 100%;
+        padding: 8px 10px;
+        font-size: 13px;
+        border: 1px solid var(--grey-400);
+        background: var(--white);
+        color: var(--grey-900);
+        font-family: inherit;
+        border-radius: 3px;
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      input[type="text"]:focus,
+      input[type="password"]:focus,
+      select:focus {
+        outline: none;
+        border-color: var(--grey-700);
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04), 0 0 0 2px rgba(97, 97, 97, 0.1);
+      }
+
+      /* Buttons */
+      .button-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+
+      button {
+        padding: 8px 14px;
+        font-size: 12px;
+        font-weight: 600;
+        border: 1px solid;
+        cursor: pointer;
+        font-family: inherit;
+        background: var(--white);
+        color: var(--grey-900);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        border-radius: 3px;
+        transition: all 0.2s ease;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+      }
+
+      button.primary {
+        background: var(--grey-900);
+        color: var(--white);
+        border-color: var(--grey-900);
+      }
+
+      button.primary:hover:not(:disabled) {
+        background: var(--grey-800);
+        border-color: var(--grey-800);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.12);
+      }
+
+      button.ghost {
+        background: var(--white);
+        color: var(--grey-900);
+        border-color: var(--grey-400);
+      }
+
+      button.ghost:hover:not(:disabled) {
+        background: var(--grey-50);
+        border-color: var(--grey-600);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+      }
+
+      button:active:not(:disabled) {
+        transform: translateY(1px);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+      }
+
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+        background-color: var(--grey-300);
+        color: var(--grey-600);
+        border-color: var(--grey-300);
+        box-shadow: none;
+      }
+
+      button.primary:disabled {
+        background-color: var(--grey-400);
+        border-color: var(--grey-400);
+        color: var(--grey-600);
+      }
+
+      /* Input Group */
+      .input-group {
+        display: flex;
+        gap: 7px;
+      }
+
+      .input-group input {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .input-group button {
+        flex-shrink: 0;
+      }
+
+      /* Help Icon */
+      .help-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 17px;
+        height: 17px;
+        border: 1px solid var(--grey-600);
+        background: var(--white);
+        color: var(--grey-700);
+        font-weight: 700;
+        font-size: 10px;
+        cursor: pointer;
+        margin-left: 6px;
+        position: relative;
+        border-radius: 2px;
+        transition: all 0.2s ease;
+      }
+
+      .help-icon:hover {
+        background: var(--grey-900);
+        color: var(--white);
+        border-color: var(--grey-900);
+      }
+
+      /* Popover - positioned above the help icon */
+      .popover {
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+        width: 320px;
+        background: var(--white);
+        border: 1px solid var(--grey-400);
+        padding: 14px;
+        display: none;
+        z-index: 1000;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+        border-radius: 3px;
+      }
+
+      .popover::after {
+        content: '';
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 0;
+        height: 0;
+        border-left: 8px solid transparent;
+        border-right: 8px solid transparent;
+        border-top: 8px solid var(--white);
+      }
+
+      .popover::before {
+        content: '';
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 0;
+        height: 0;
+        border-left: 9px solid transparent;
+        border-right: 9px solid transparent;
+        border-top: 9px solid var(--grey-400);
+        margin-top: 1px;
+        z-index: -1;
+      }
+
+      .popover.visible {
+        display: block;
+      }
+
+      .popover .close-x {
+        position: absolute;
+        top: 5px;
+        right: 5px;
+        width: 20px;
+        height: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        border: none;
+        color: var(--grey-600);
+        font-size: 16px;
+        cursor: pointer;
+        padding: 0;
+        border-radius: 2px;
+        transition: all 0.2s ease;
+      }
+
+      .popover .close-x:hover {
+        background: var(--grey-200);
+        color: var(--grey-900);
+      }
+
+      .popover strong {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--grey-900);
+        display: block;
+        margin-bottom: 8px;
+      }
+
+      .popover p {
+        margin: 7px 0;
+        color: var(--grey-700);
+        font-size: 12px;
+      }
+
+      .popover ul {
+        margin: 5px 0 0 14px;
+        padding: 0;
+        color: var(--grey-700);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .popover li {
+        margin-bottom: 3px;
+      }
+
+      .popover code {
+        background: var(--grey-100);
+        padding: 2px 5px;
+        border: 1px solid var(--grey-300);
+        font-size: 11px;
+        font-family: 'Consolas', 'Monaco', monospace;
+        color: var(--grey-800);
+        border-radius: 2px;
+      }
+
+      /* Details View - Compact with fixed height and scroll */
+      #details-view {
+        margin-top: 14px;
+        background: var(--grey-50);
+        border: 1px solid var(--grey-300);
+        border-radius: 3px;
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+        max-height: 220px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #details-view .details-header {
+        padding: 8px 10px;
+        background: var(--white);
+        border-bottom: 1px solid var(--grey-300);
+        flex-shrink: 0;
+      }
+
+      #details-title {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--grey-900);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      #details-body {
+        font-size: 10px;
+        color: var(--grey-700);
+        padding: 10px;
+        overflow-y: auto;
+        overflow-x: auto;
+        flex: 1;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.4;
+      }
+
+      /* Custom scrollbar for details view */
+      #details-body::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+
+      #details-body::-webkit-scrollbar-track {
+        background: var(--grey-100);
+        border-radius: 3px;
+      }
+
+      #details-body::-webkit-scrollbar-thumb {
+        background: var(--grey-400);
+        border-radius: 3px;
+      }
+
+      #details-body::-webkit-scrollbar-thumb:hover {
+        background: var(--grey-500);
+      }
+
+      #details-body::-webkit-scrollbar-corner {
+        background: var(--grey-100);
+      }
+
+      /* Responsive */
+      @media (max-width: 768px) {
+        body {
+          padding: 0;
+        }
+
+        .container {
+          border: none;
+          border-radius: 0;
+          box-shadow: none;
+        }
+
+        .header {
+          padding: 12px 14px;
+        }
+
+        .content {
+          padding: 12px;
+        }
+
+        .section-header {
+          padding: 8px 12px;
+        }
+
+        .section-body {
+          padding: 12px;
+        }
+
+        .status-grid {
+          grid-template-columns: 1fr;
+          gap: 8px;
+        }
+
+        .button-group {
+          flex-direction: column;
+        }
+
+        .button-group button {
+          width: 100%;
+        }
+
+        .input-group {
+          flex-direction: column;
+        }
+
+        .input-group button {
+          width: 100%;
+        }
+
+        .popover {
+          position: fixed;
+          left: 50%;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          width: calc(100% - 24px);
+          max-width: 320px;
+          bottom: unset;
+        }
+
+        .popover::after,
+        .popover::before {
+          display: none;
+        }
+
+        #details-view {
+          max-height: 180px;
+        }
+
+        #details-body {
+          font-size: 9px;
+        }
+      }
+
+      @media (max-width: 480px) {
+        .header h1 {
+          font-size: 14px;
+        }
+
+        .section-title {
+          font-size: 10px;
+        }
+
+        button {
+          font-size: 11px;
+          padding: 7px 12px;
+        }
+
+        #details-view {
+          max-height: 160px;
+        }
+
+        #details-body {
+          font-size: 9px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>DSC Agent Control Panel</h1>
+      </div>
+
+      <div class="content">
+        <!-- Status Section -->
+        <div class="section">
+          <div class="section-header">
+            <h2 class="section-title">System Status</h2>
+          </div>
+          <div class="section-body">
+            <div class="status-grid">
+              <div class="status-item">
+                <div class="status-label">Status</div>
+                <div class="status-value">
+                  <span id="status-badge" class="badge warn">Unknown</span>
+                </div>
+              </div>
+              <div class="status-item">
+                <div class="status-label">Information</div>
+                <div class="status-value" id="status">—</div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Controls</label>
+              <div class="button-group">
+                <button id="btn-start" class="primary">Start</button>
+                <button id="btn-stop" class="ghost">Stop</button>
+
+
+                <!-- <button id="btn-health" class="ghost">Health</button>
+                <button id="btn-certs" class="ghost">Certificate</button> -->
+              </div>
+            </div>
+
+            <div id="details-view" style="display:none">
+              <div class="details-header">
+                <h3 id="details-title"></h3>
+              </div>
+              <div id="details-body"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Configuration Section -->
+        <div class="section">
+          <div class="section-header">
+            <h2 class="section-title">Configuration</h2>
+          </div>
+          <div class="section-body">
+            <div class="form-group">
+              <label for="tokenName">Token</label>
+              <select id="tokenName"></select>
+            </div>
+
+            <div class="form-group">
+              <label>
+                Token Driver (PKCS#11)
+                <button id="pkcs11-help" class="help-icon" aria-expanded="false" aria-controls="pkcs11-popover" title="PKCS#11 help">?</button>
+                
+                <div id="pkcs11-popover" class="popover" role="dialog" aria-hidden="true">
+                  <button id="pkcs11-help-close" class="close-x" aria-label="Close">×</button>
+                  <strong>Token Driver (PKCS#11)</strong>
+                  <p>Quick steps:</p>
+                  <ul>
+                    <li>Click <strong>Browse</strong> to choose the module file from disk.</li>
+                    <li>Or copy the full path and paste it into the field (Ctrl+V).</li>
+                    <li>Try the presets list for common vendor modules.</li>
+                  </ul>
+                  <p style="margin-top: 8px;">Windows example: <code>C:\Windows\System32\opensc-pkcs11.dll</code></p>
+                </div>
+              </label>
+              <div class="input-group">
+                <input type="text" id="PKCS11_DLL" placeholder="Path to vendor/OpenSC PKCS#11" list="dll-presets" />
+                <button id="btn-browse" class="ghost">Browse</button>
+              </div>
+              <datalist id="dll-presets"></datalist>
+            </div>
+
+            <div class="form-group">
+              <button id="btn-save" class="primary">Save Configuration</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="index.js"></script>
+
+    <script>
+      (function(){
+        const btn = document.getElementById('pkcs11-help');
+        const pop = document.getElementById('pkcs11-popover');
+        const closeBtn = document.getElementById('pkcs11-help-close');
+        if(!btn || !pop) return;
+        
+        function open(){
+          pop.classList.add('visible');
+          btn.setAttribute('aria-expanded','true');
+          pop.setAttribute('aria-hidden','false');
+        }
+        
+        function close(){
+          pop.classList.remove('visible');
+          btn.setAttribute('aria-expanded','false');
+          pop.setAttribute('aria-hidden','true');
+        }
+        
+        btn.addEventListener('click', (e)=> { 
+          e.stopPropagation(); 
+          pop.classList.contains('visible') ? close() : open(); 
+        });
+        
+        closeBtn && closeBtn.addEventListener('click', (e)=>{ 
+          e.stopPropagation(); 
+          close(); 
+        });
+        
+        document.addEventListener('click', (e)=>{ 
+          if(!pop.contains(e.target) && e.target !== btn) close(); 
+        });
+        
+        window.addEventListener('keydown', (e)=>{ 
+          if(e.key === 'Escape') close(); 
+        });
+      })();
+    </script>
+  </body>
+</html>

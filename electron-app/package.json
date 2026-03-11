@@ -1,0 +1,104 @@
+{
+  "name": "dsc-agent-electron",
+  "version": "0.1.0",
+  "description": "Tray UI to control dsc-agent.js (non-destructive)",
+  "main": "runtime/electron/main.loader.js",
+  "private": true,
+  "type": "commonjs",
+  "author": {
+    "name": "DSC Agent",
+    "email": "support@example.com",
+    "url": "https://example.com/dsc-agent"
+  },
+  "homepage": "https://example.com/dsc-agent",
+  "icon": "assets/icon.png",
+  "scripts": {
+    "dev": "electron .",
+    "electron": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "bytenode": "^1.5.7"
+  },
+  "devDependencies": {
+    "electron": "^29.3.0",
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.27.3",
+    "javascript-obfuscator": "^5.3.0"
+  },
+  "build": {
+    "appId": "com.example.dscagent",
+    "productName": "DSC Agent",
+    "files": [
+      "package.json",
+      "runtime/electron/**",
+      "renderer/**",
+      "assets/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/agent",
+        "to": "agent",
+        "filter": [
+          "dsc-agent.loader.js",
+          "dsc-agent.jsc"
+        ]
+      },
+      {
+        "from": "..",
+        "to": "agent",
+        "filter": [
+          "package.json",
+          "package-lock.json",
+          "node_modules/**",
+          "!electron-app/**",
+          "!web-demo/**"
+        ]
+      },
+      {
+        "from": "bin/win/",
+        "to": "bin/win/",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "bin/mac/",
+        "to": "bin/mac/",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "bin/linux/",
+        "to": "bin/linux/",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "assets/windows/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "mac": {
+      "icon": "assets/mac/icon.icns",
+      "category": "public.app-category.business"
+    },
+    "linux": {
+      "icon": "assets/icon.png",
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
+      "maintainer": "DSC Agent <support@example.com>"
+    }
+  }
+}

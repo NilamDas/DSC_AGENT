@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>DSC PDF Signer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color-scheme: light dark; }
+    body { margin: 16px; font-size: 14px; }
+    h1 { margin: 0 0 12px; font-size: 1.4rem; }
+    .wrap { max-width: 720px; }
+    .card { max-width: 720px; border: 1px solid #9993; border-radius: 10px; padding: 12px; }
+    .row { display: grid; grid-template-columns: 140px 1fr; gap: 8px; align-items: center; margin: 8px 0; }
+    .row > label { color: #555; }
+    button { padding: 8px 12px; border-radius: 10px; border: 1px solid #6665; background: #2b73ff; color: #fff; cursor: pointer; }
+    #status { margin-top: 8px; min-height: 1.2em; color: #444; }
+    .ok { color: #1a7f37; }
+    .err { color: #b00020; }
+    small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+  <link rel="preconnect" href="." />
+  <script src="./client/dsc-agent-client.iife.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>DSC PDF Signer</h1>
+
+    <!-- Local Agent status at the top -->
+  
+      <div class="row">
+        <label>Local Agent</label>
+        <div>
+          <span id="agentState"><em>Discovering…</em></span>
+          <div><small class="mono" id="agentInfo"></small></div>
+        </div>
+      </div>
+      <div id="status"></div>
+    </div>
+
+    <!-- Stacked task cards -->
+       <div class="card" style="margin-bottom:14px;">
+    <div class="card" style="margin-bottom:14px;">
+      <h3 style="margin:4px 0 8px;">Token & User Details</h3>
+      <p style="margin:0 0 10px; color:#555;">View details of the connected token and user certificate.</p>
+      <p><a href="token-details.html"><button>Open Token Details</button></a></p>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
+      <h3 style="margin:4px 0 8px;">Text Signing</h3>
+      <p style="margin:0 0 10px; color:#555;">Sign any text using your DSC token. Useful for hashes, contracts, etc.</p>
+      <p><a href="text-sign.html"><button>Open Text Signing</button></a></p>
+    </div>
+    <div class="card" style="margin-bottom:14px;">
+      <h3 style="margin:4px 0 8px;">Fresh Sign (single PDF)</h3>
+      <p style="margin:0 0 10px; color:#555;">Sign one PDF with fixed reason “Signed via DSC agent”. Configure PIN on the next page.</p>
+      <p><a href="test-sign.html"><button>Open Fresh Sign</button></a></p>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
+      <h3 style="margin:4px 0 8px;">Re‑Sign (flatten)</h3>
+      <p style="margin:0 0 10px; color:#555;">Flatten previous signatures and sign again. Configure PIN on the next page.</p>
+      <p><a href="test-resign-flatten.html"><button>Open Re‑Sign (flatten)</button></a></p>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
+      <h3 style="margin:4px 0 8px;">Batch Sign</h3>
+      <p style="margin:0 0 10px; color:#555;">Sign multiple PDFs in one go. Configure PIN on the next page.</p>
+      <p><a href="test-batch.html"><button>Open Batch Sign</button></a></p>
+    </div>
+  </div>
+
+  <script>
+    // Minimal agent discovery for status only
+    const els = {
+      status: document.getElementById('status'),
+      agentState: document.getElementById('agentState'),
+      agentInfo: document.getElementById('agentInfo'),
+    };
+    function setStatus(msg, ok = null) {
+      els.status.textContent = msg || '';
+      els.status.className = ok === true ? 'ok' : ok === false ? 'err' : '';
+    }
+    async function discoverAgent() {
+      try {
+        if (!window.DSCAgent || !window.DSCAgent.discover) throw new Error('Client SDK not loaded');
+        const agent = await window.DSCAgent.discover();
+        const info = await agent.health().catch(() => ({}));
+        els.agentState.innerHTML = '<span class="ok">Connected</span>';
+        els.agentInfo.textContent = `Agent: ${agent.base} | DLL: ${info.dll || 'n/a'} | Slot: ${info.slotPresent ? 'present' : 'no token'}`;
+      } catch (e) {
+        els.agentState.innerHTML = '<span class="err">Not found</span>';
+        els.agentInfo.textContent = 'Start the local agent: node agent/dsc-agent.js';
+        setStatus(e.message, false);
+      }
+    }
+    if (window.DSCAgent && window.DSCAgent.discover) {
+      discoverAgent();
+    } else {
+      window.addEventListener('load', () => {
+        setTimeout(() => { if (window.DSCAgent && window.DSCAgent.discover) discoverAgent(); }, 0);
+      });
+    }
+  </script>
+</body>
+</html>

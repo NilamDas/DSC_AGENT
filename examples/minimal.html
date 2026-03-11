@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Minimal DSC PDF Signer</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 16px; font-size: 14px; }
+    .row { margin: 10px 0; }
+    button { padding: 8px 12px; border-radius: 8px; border: 1px solid #6665; background: #2b73ff; color: #fff; cursor: pointer; }
+    .ok { color: #1a7f37; }
+    .err { color: #b00020; }
+  </style>
+  <!-- Note: When opened via file://, the page origin is "null". Ensure the agent ALLOW_ORIGINS includes "null",
+       or serve this file over http://127.0.0.1 and allow that origin. -->
+  <!-- Also ensure your agent is running (node dsc-agent.js) -->
+  <!-- Default ports tried: 18080, 18081, 18082 -->
+</head>
+<body>
+  <h1>Minimal DSC PDF Signer</h1>
+
+  <div class="row">
+    <input id="pdf" type="file" accept="application/pdf" />
+  </div>
+  <div class="row">
+    <button id="sign">Sign PDF</button>
+  </div>
+  <div id="status" class="row"></div>
+  <div class="row"><a id="dl" style="display:none" download="signed.pdf">Download signed.pdf</a></div>
+
+  <script>
+    const ports = [18080, 18081, 18082];
+
+    function setStatus(msg, ok = null) {
+      const el = document.getElementById('status');
+      el.textContent = msg || '';
+      el.className = ok === true ? 'ok' : ok === false ? 'err' : '';
+    }
+
+    async function discover(timeoutMs = 800) {
+      for (const p of ports) {
+        try {
+          const ctl = new AbortController();
+          const t = setTimeout(() => ctl.abort(), timeoutMs);
+          const r = await fetch(`http://127.0.0.1:${p}/health`, { signal: ctl.signal, credentials: 'include' });
+          clearTimeout(t);
+          if (r.ok) return `http://127.0.0.1:${p}`;
+        } catch (e) {}
+      }
+      throw new Error('DSC Agent not found on localhost. Start dsc-agent.js');
+    }
+
+    function toBase64(buf) {
+      const bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      let s = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      return btoa(s);
+    }
+
+    function fileToArrayBuffer(file) {
+      return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result);
+        fr.onerror = reject;
+        fr.readAsArrayBuffer(file);
+      });
+    }
+
+    document.getElementById('sign').addEventListener('click', async () => {
+      try {
+        setStatus('');
+        const file = document.getElementById('pdf').files[0];
+        if (!file) throw new Error('Choose a PDF file first');
+        if (file.type && !/pdf/i.test(file.type)) throw new Error('Selected file is not a PDF');
+
+        const base = await discover();
+        setStatus('Signing... authorize on your token if prompted.');
+
+        // Prefer agent-side PIN prompt if supported; otherwise fall back to page prompt
+        const info = await fetch(base + '/health', { credentials: 'include' }).then(r => r.json()).catch(() => ({}));
+
+
+        const ab = await fileToArrayBuffer(file);
+        const body = {
+          pdfBase64: toBase64(ab),
+          reason: 'Signed via DSC Agent',
+          includeESS: true,
+          embedIntermediates: false,
+          requirePin : true,
+        };
+
+        const r = await fetch(base + '/sign/pdf', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          credentials: 'include'
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.ok) throw new Error(j.message || ('HTTP ' + r.status));
+
+        const b64 = j.signedPdfBase64;
+        const a = document.getElementById('dl');
+        a.href = 'data:application/pdf;base64,' + b64;
+        a.style.display = '';
+        setStatus('Done.', true);
+      } catch (e) {
+        setStatus(e.message || String(e), false);
+      }
+    });
+
+    // On load, try to detect agent for a friendly message
+    (async () => {
+      try {
+        const base = await discover(400);
+        setStatus('Agent connected: ' + base, true);
+      } catch (e) {
+        setStatus('Agent not found. Start dsc-agent.js', false);
+      }
+    })();
+  </script>
+</body>
+</html>

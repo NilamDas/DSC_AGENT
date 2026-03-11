@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Text Signing</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
+    button { padding: 8px 16px; border-radius: 8px; border: 1px solid #6665; background: #2b73ff; color: #fff; cursor: pointer; }
+    textarea { width: 100%; max-width: 700px; min-height: 100px; font-size: 1rem; margin-bottom: 12px; }
+    pre { background: #f6f8fa; border-radius: 6px; padding: 12px; max-width: 700px; overflow: auto; }
+    label { font-weight: 500; }
+  </style>
+</head>
+<body>
+  <h1>Text Signing</h1>
+  <label for="signTextInput">Text to sign:</label><br>
+  <textarea id="signTextInput" placeholder="Enter text to sign..."></textarea><br>
+  <button id="signTextBtn">Sign Text</button>
+  <pre id="signTextOut"></pre>
+  <script src="./client/dsc-agent-client.iife.js"></script>
+  <script>
+    let agent = null;
+    async function discover() {
+      try { agent = await window.DSCAgent.discover(); } catch {}
+    }
+    document.getElementById('signTextBtn').addEventListener('click', async () => {
+      const out = document.getElementById('signTextOut');
+      const textarea = document.getElementById('signTextInput');
+      try {
+        if (!agent) throw new Error('Agent not connected');
+        const text = textarea.value;
+        if (!text) throw new Error('Enter text to sign');
+        out.textContent = 'Signing...';
+        const body = { text, requirePin: true };
+        const r = await fetch(agent.base + '/sign/text', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          credentials: 'include'
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j || !j.ok) throw new Error((j && j.message) || ('HTTP ' + r.status));
+        out.textContent = 'Signature (base64):\n' + j.signature;
+      } catch(e) {
+        out.textContent = 'Error: ' + (e.message || String(e));
+      }
+    });
+    discover();
+  </script>
+</body>
+</html>

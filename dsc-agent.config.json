@@ -1,0 +1,11 @@
+{
+  "pkcs11Dll": "C:/Windows/System32/CryptoIDA_pkcs11.dll",
+  "requirePinPerSign": true,
+  "pinPrompt": {},
+  "allowOrigins": ["http://localhost", "http://127.0.0.1"],
+  "port": 18080,
+  "signRect": [250, 40, 600, 90],
+  "maxBodyMb": 100,
+  "ltv": false,
+  "ltvStrict": false
+}

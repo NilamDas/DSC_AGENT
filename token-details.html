@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Token Details</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
+    button { padding: 8px 16px; border-radius: 8px; border: 1px solid #6665; background: #2b73ff; color: #fff; cursor: pointer; }
+    pre { background: #f6f8fa; border-radius: 6px; padding: 12px; max-width: 700px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <h1>Token & User Details</h1>
+  <button id="tokenDetailsBtn">Get Token Details</button>
+  <pre id="tokenDetailsOut"></pre>
+  <!-- <script src="./client/dsc-agent-client.iife.js"></script> -->
+  <script>
+    let agent = null;
+    async function discover() {
+      try { 
+        agent = await window.DSCAgent.discover(); 
+        console.log(agent);
+        
+      } catch {}
+    }
+    document.getElementById('tokenDetailsBtn').addEventListener('click', async () => {
+      const out = document.getElementById('tokenDetailsOut');
+      try {
+        // if (!agent) throw new Error('Agent not connected');
+        out.textContent = 'Loading...';
+        const body = { requirePin: true };
+        const r = await fetch('http://127.0.0.1:18080/token/details', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          credentials: 'include'
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j || !j.ok) throw new Error((j && j.message) || ('HTTP ' + r.status));
+        out.textContent = JSON.stringify(j, null, 2);
+      } catch(e) {
+        out.textContent = 'Error: ' + (e.message || String(e));
+      }
+    });
+    discover();
+  </script>
+</body>
+</html>

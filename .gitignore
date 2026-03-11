@@ -1,0 +1,7 @@
+dsc_signer_working.tar
+/node_modules
+/electron-app/node_modules
+/electron-app/dist
+/electron-app/release
+/.env
+/electron-app/bin/
