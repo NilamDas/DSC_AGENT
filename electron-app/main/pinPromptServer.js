@@ -25,9 +25,13 @@ async function showPinDialog(message, getMainWindow) {
       if (pinPrompt.win && !pinPrompt.win.isDestroyed()) {
         try {
           pinPrompt.win.webContents.send('pin:set-message', String(message || 'Enter token PIN'));
-          pinPrompt.win.show();
-          pinPrompt.win.focus();
-          pinPrompt.win.webContents.focus();
+              // Ensure the existing prompt is visible, centered and focused
+              try { if (pinPrompt.win.isMinimized && pinPrompt.win.isMinimized()) pinPrompt.win.restore(); } catch {}
+              try { if (pinPrompt.win.center) pinPrompt.win.center(); } catch {}
+              try { pinPrompt.win.setAlwaysOnTop(true, 'modal-panel'); } catch {}
+              try { pinPrompt.win.show(); } catch {}
+              try { pinPrompt.win.focus(); } catch {}
+              try { pinPrompt.win.webContents.focus(); } catch {}
         } catch {}
         const w = pinPrompt.win;
         let settled = false;
@@ -75,14 +79,14 @@ async function showPinDialog(message, getMainWindow) {
             w.setContentSize(Math.min(Math.max(pref.width, 420), 640), Math.min(Math.max(pref.height, 200), 480));
           }
         } catch {}
+        try { if (w.center) w.center(); } catch {}
         w.setAlwaysOnTop(true, 'modal-panel');
         w.show();
         try { w.focus(); w.webContents.focus(); } catch {}
         setTimeout(() => { try { w.focus(); w.webContents.focus(); } catch {} }, 25);
         setTimeout(() => { try { w.focus(); w.webContents.focus(); } catch {} }, 120);
       });
-      // w.loadFile(require('path').join(__dirname, '..', 'renderer', 'pin.html'));
-        w.loadFile(require('path').join(__dirname, '..', '..', 'renderer', 'pin.html'));
+      w.loadFile(require('path').join(__dirname, '..', 'renderer', 'pin.html'));
       const onceReady = () => {
         w.webContents.send('pin:set-message', String(message || 'Enter token PIN'));
         w.webContents.send('pin:focus');
