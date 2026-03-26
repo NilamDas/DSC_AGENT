@@ -1,27 +1,15 @@
-﻿'use strict';
-
-
-require('dotenv').config({
-  path: require('path').resolve(__dirname, '..', '.env'),
-});
-
-
+'use strict';
 /**
  * agent/timeServerClient.js
- * Centralized client for time server health + timestamp requests.
+ * Thin client for time-server health and signing authorization endpoints.
  */
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:5001';
-const DEFAULT_API_KEY = process.env.TIMESERVER_API_KEY ;
-const DEFAULT_TIMEOUT_MS = Number(process.env.TIMESERVER_TIMEOUT_MS || 3000);
+
+const DEFAULT_TIMEOUT_MS = 3000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function getAuthHeader(token) {
-  if (!token || typeof token !== 'string') return {};
-  return { Authorization: `Bearer ${token}` };
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -79,80 +67,56 @@ async function checkHealth({ timeoutMs = 2000, retries = 1 } = {}) {
   return requestJson('/health', { method: 'GET', timeoutMs, retries });
 }
 
-/**
- * Request a timestamp from the time server.
- */
-async function requestTimestamp(
-  { name, machineHash, apiKey } = {},
-  { endpoint = '/api/time', timeoutMs = 5000, retries = 1 } = {}
-) {
-  const effectiveApiKey = (typeof apiKey === 'string' && apiKey.trim())
-    ? apiKey.trim()
-    : null;
-
-  if (!effectiveApiKey) {
-    throw new Error('apiKey is required');
-  }
-  console.log('[timeServerClient] requestTimestamp payload:', {
-    name,
-    machineHash,
-    hasApiKey: !!effectiveApiKey,
-  });
-  return requestJson(endpoint, {
-    method: 'POST',
-    timeoutMs,
-    retries,
-    body: {
-      name,
-      machineHash,
-      apiKey: effectiveApiKey,
-    },
-  });
-}
-
-async function generateToken(
-  { name, machineHash, apiKey } = {},
-  { endpoint = '/api/auth/generate-token', timeoutMs = 5000, retries = 1 } = {}
-) {
-  const effectiveApiKey = (typeof apiKey === 'string' && apiKey.trim())
-    ? apiKey.trim()
-    : null;
-
-  if (!effectiveApiKey) {
-    throw new Error('apiKey is required');
-  }
-   
-  
-  console.log('[timeServerClient] requestTimestamp payload:', {
-    name,
-    machineHash,
-    hasApiKey: !!effectiveApiKey,
-  });
-
-  return requestJson(endpoint, {
-    method: 'POST',
-    timeoutMs,
-    retries,
-    body: {
-      name,
-      machineHash,
-      apiKey: effectiveApiKey,
-    },
-  });
-}
-
-async function requestSignAuthorization(
-  token,
+async function createAuthorization(
+  apiKey,
   payload = {},
-  { endpoint = '/api/sign', timeoutMs = 5000, retries = 0 } = {}
+  { endpoint = '/api/sign/authorizations', timeoutMs = 5000, retries = 0 } = {}
 ) {
+  const effectiveApiKey = (typeof apiKey === 'string' && apiKey.trim())
+    ? apiKey.trim()
+    : null;
+
+  if (!effectiveApiKey) {
+    throw new Error('apiKey is required');
+  }
+
   return requestJson(endpoint, {
     method: 'POST',
     timeoutMs,
     retries,
     headers: {
-      Authorization: String(token || '').trim(),
-      'Content-Type': 'application/json',
+      'x-api-key': effectiveApiKey,
+    },
+    body: payload,
+  });
+}
+
+async function completeAuthorization(
+  apiKey,
+  authorizationId,
+  payload = {},
+  { endpoint, timeoutMs = 5000, retries = 0 } = {}
+) {
+  const effectiveApiKey = (typeof apiKey === 'string' && apiKey.trim())
+    ? apiKey.trim()
+    : null;
+  const normalizedAuthorizationId = typeof authorizationId === 'string' ? authorizationId.trim() : '';
+
+  if (!effectiveApiKey) {
+    throw new Error('apiKey is required');
+  }
+  if (!normalizedAuthorizationId) {
+    throw new Error('authorizationId is required');
+  }
+
+  const targetEndpoint = endpoint || `/api/sign/authorizations/${encodeURIComponent(normalizedAuthorizationId)}/complete`;
+
+  return requestJson(targetEndpoint, {
+    method: 'POST',
+    timeoutMs,
+    retries,
+    headers: {
+      'x-api-key': effectiveApiKey,
     },
     body: payload,
   });
@@ -160,7 +124,6 @@ async function requestSignAuthorization(
 
 module.exports = {
   checkHealth,
-  requestTimestamp,
-  generateToken,
-  requestSignAuthorization,
-};   
+  createAuthorization,
+  completeAuthorization,
+};

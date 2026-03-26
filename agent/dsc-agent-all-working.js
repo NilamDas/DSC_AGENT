@@ -1,4 +1,4 @@
-﻿// =============================================
+// =============================================
 // File: dsc-agent.js  (local client service)
 // =============================================
 // A tiny localhost HTTP service that any web app can call via JavaScript
@@ -23,10 +23,6 @@
 //   set DSC_PIN=123456    (or send pin in request body)
 //   node dsc-agent.js
 
-require('dotenv').config({
-  path: require('path').resolve(__dirname, '..', '.env'),
-});
-
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -45,16 +41,6 @@ const cfg = require('./lib/config');
 const pinPromptClient = require('./lib/pinPromptClient');
 const pkcs11lib = require('./lib/pkcs11');
 const pdfUtil = require('./lib/pdf');
-const timeServerClient = require('./timeServerClient');
-const { runTimeServerHealthOnBoot } = require('./services/timeServerHealthService');
-const {
-  createSigningAuthorization,
-  completeSigningAuthorization,
-} = require('./services/signingTimeService');
-const {
-  buildCreateAuthorizationPayload,
-  buildCompletionPayload,
-} = require('./lib/signAuthorizationPayloadBuilder');
 
 const VERSION = '0.1.0';
 
@@ -74,10 +60,23 @@ const MAX_BODY_MB = cfg.MAX_BODY_MB;
 const LTV_ENABLE = cfg.LTV_ENABLE;
 const LTV_STRICT = cfg.LTV_STRICT;
 
+// Security config
+const RATE_LIMIT_WINDOW_MS = cfg.RATE_LIMIT_WINDOW_MS || 60000; // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = cfg.RATE_LIMIT_MAX_REQUESTS || 100;
+const ENABLE_HTTPS = cfg.ENABLE_HTTPS || false;
+const HTTPS_CERT_PATH = cfg.HTTPS_CERT_PATH;
+const HTTPS_KEY_PATH = cfg.HTTPS_KEY_PATH;
+const ENABLE_REQUEST_LOGGING = cfg.ENABLE_REQUEST_LOGGING || false;
+const MAX_PIN_ATTEMPTS = cfg.MAX_PIN_ATTEMPTS || 3;
+const PIN_LOCKOUT_MS = cfg.PIN_LOCKOUT_MS || 300000; // 5 minutes
+
 // In-memory session PIN (optional, process-lifetime only)
 let SESSION_PIN = '';
 let USER_SELECTED_DLL = '';
 let USER_SELECTED_TOKEN = '';
+
+// Security state
+const failedPinAttempts = new Map(); // IP -> { count, lockedUntil }
 
 const OID = {
   data: '1.2.840.113549.1.7.1',
@@ -96,21 +95,14 @@ const OID = {
   aia_ocsp: '1.3.6.1.5.5.7.48.1',
   crlDistPoints: '2.5.29.31',
 };
-const A_SHA256 = Buffer.from([0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20]);
+const A_SHA256 = Buffer.from([0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20]);
 const di256 = (h) => Buffer.concat([A_SHA256, h]);
 const ab = (b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
-
-
-const multer = require('multer');
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_BODY_MB * 1024 * 1024 },
-});
 
 function ensureTokenReady(dll) {
   try {
     pkcs11lib.withSession(dll, '', (p11, session) => {
-      try { p11.C_GetSessionInfo(session); } catch { }
+      try { p11.C_GetSessionInfo(session); } catch {}
       return true;
     });
   } catch (err) {
@@ -127,6 +119,9 @@ function ensureTokenReady(dll) {
 
 function translatePkcs11Error(err) {
   const raw = err && err.message ? String(err.message) : String(err || 'Unexpected signing error');
+  if (err && (err.code === 'SIGNING_TIME_REQUIRED' || err.code === 'SIGNING_TIME_INVALID')) {
+    return { status: 400, message: raw || 'signingTime is invalid or missing' };
+  }
   if (err && err.code === 'DSC_TOKEN_MISSING') {
     return { status: 503, message: 'DSC token not detected. Connect the token and try again.' };
   }
@@ -182,108 +177,20 @@ async function promptPinEnsuringToken(dll, promptMessage, tokenMissingMessage, o
   return pin;
 }
 
-function resolveTimeServerIdentityFromToken(dll, pin = '') {
-  const out = { name: '', serialNumber: '' };
-
-  try {
-    const pairs = pkcs11lib.listPairs(dll, pin);
-    const first = Array.isArray(pairs) ? pairs.find((p) => p && p.subjectCN) : null;
-    if (first && first.subjectCN && String(first.subjectCN).trim()) {
-      out.name = String(first.subjectCN).trim();
-    }
-  } catch { }
-
-  try {
-    pkcs11lib.withSession(dll, pin, (p11, session) => {
-      let slot = null;
-      try {
-        const sInfo = p11.C_GetSessionInfo(session);
-        slot = sInfo && (sInfo.slotID || sInfo.slotId || sInfo.slot);
-      } catch { }
-      if (!slot) {
-        try {
-          const slots = p11.C_GetSlotList(true) || [];
-          slot = slots[0] || null;
-        } catch { }
-      }
-      if (!slot) return;
-      const tInfo = p11.C_GetTokenInfo(slot);
-      const serial = tInfo && tInfo.serialNumber ? String(tInfo.serialNumber).trim() : '';
-      if (serial) out.serialNumber = serial;
-    });
-  } catch { }
-
-  return out;
-}
-
-function buildTimeServerUserBody(reqBody = {}) {
-  const body = reqBody && typeof reqBody === 'object' ? { ...reqBody } : {};
-  try {
-    const { dll } = ensureDllPicked();
-    const pin = (body.pin || SESSION_PIN || DSC_PIN_ENV || '').toString();
-    const identity = resolveTimeServerIdentityFromToken(dll, pin);
-    if (!body.name && identity.name) body.name = identity.name;
-    if (!body.serialNumber && identity.serialNumber) body.serialNumber = identity.serialNumber;
-    if (!body.machineHash && identity.serialNumber) body.machineHash = identity.serialNumber;
-  } catch { }
-  return body;
-}
-
-function resolveRemoteApiKey(req, body = {}) {
-  // const headerKey = req && typeof req.get === 'function' ? String(req.get('x-api-key') || '').trim() : '';
-  const bodyKey = body && body.apiKey !== undefined && body.apiKey !== null ? String(body.apiKey).trim() : '';
-  return bodyKey || headerKey;
-}
-
-function extractRemoteAuthError(error, fallbackMessage) {
-  const remoteMessage = error && error.response && error.response.error && error.response.error.message
-    ? String(error.response.error.message)
-    : '';
-  const remoteCode = error && error.response && error.response.error && error.response.error.code
-    ? String(error.response.error.code)
-    : '';
-
-  return {
-    status: error && typeof error.status === 'number' ? error.status : 502,
-    message: remoteMessage || fallbackMessage,
-    reason: remoteCode || (error && error.message ? String(error.message) : 'remote_authorization_error'),
-  };
-}
-
-async function completeAuthorizationFailureSafe(apiKey, authorizationContext, failureReason) {
-  if (!apiKey || !authorizationContext || !authorizationContext.authorizationId || !authorizationContext.authorizationToken) {
-    return;
-  }
-
-  try {
-    const payload = buildCompletionPayload({
-      authorizationToken: authorizationContext.authorizationToken,
-      status: 'failed',
-      failureReason: failureReason || 'Signing failed',
-    });
-    await completeSigningAuthorization({
-      apiKey,
-      authorizationId: authorizationContext.authorizationId,
-      payload,
-    }, { timeServerClient });
-  } catch (completionError) {
-    console.warn('[sign-auth] failed to report signing failure:', completionError && completionError.message ? completionError.message : completionError);
-  }
-}
-
 
 // ---------- helpers ----------
+
 function pdfRefEquals(a, b) {
   try {
-    // DEBUG: Log prevBoxes for all pages and for the target page
-    if (Array.isArray(prevBoxes)) {
-      console.log('DEBUG: prevBoxes (all):', JSON.stringify(prevBoxes, null, 2));
-      const prevRectsForTarget = prevBoxes.filter(b => {
-        let pageIdx = (b.pageIndex !== undefined) ? b.pageIndex : (b.page !== undefined ? b.page - 1 : 0);
-        return pageIdx === targetIndexTMP;
-      });
-      console.log('DEBUG: prevBoxes for target page', targetIndexTMP, ':', JSON.stringify(prevRectsForTarget, null, 2));
-    }
+      // DEBUG: Log prevBoxes for all pages and for the target page
+      if (Array.isArray(prevBoxes)) {
+        console.log('DEBUG: prevBoxes (all):', JSON.stringify(prevBoxes, null, 2));
+        const prevRectsForTarget = prevBoxes.filter(b => {
+          let pageIdx = (b.pageIndex !== undefined) ? b.pageIndex : (b.page !== undefined ? b.page-1 : 0);
+          return pageIdx === targetIndexTMP;
+        });
+        console.log('DEBUG: prevBoxes for target page', targetIndexTMP, ':', JSON.stringify(prevRectsForTarget, null, 2));
+      }
     if (!a || !b) return false;
     if (a === b) return true;
     const toRefId = (ref) => {
@@ -297,7 +204,7 @@ function pdfRefEquals(a, b) {
     const idA = toRefId(a);
     const idB = toRefId(b);
     if (idA && idB) return idA === idB;
-  } catch { }
+  } catch {}
   return false;
 }
 
@@ -308,11 +215,11 @@ function pdfArrayToRefs(arr) {
     const size = arr.size ? arr.size() : (arr.array ? arr.array.length : 0);
     for (let i = 0; i < size; i++) {
       let ref = null;
-      try { ref = arr.get ? arr.get(i) : null; } catch { }
+      try { ref = arr.get ? arr.get(i) : null; } catch {}
       if (!ref && arr.array && i < arr.array.length) ref = arr.array[i];
       if (ref) out.push(ref);
     }
-  } catch { }
+  } catch {}
   return out;
 }
 
@@ -339,39 +246,39 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
     let widgetRef = null;
     let widget = null;
     let kidsArray = null;
-    try { kidsArray = field && field.lookupMaybe ? field.lookupMaybe(PDFName.of('Kids')) : null; } catch { }
+    try { kidsArray = field && field.lookupMaybe ? field.lookupMaybe(PDFName.of('Kids')) : null; } catch {}
     const kidRefs = pdfArrayToRefs(kidsArray);
     if (kidRefs.length > 0) {
       widgetRef = kidRefs[0];
-      try { widget = context.lookup(widgetRef); } catch { }
+      try { widget = context.lookup(widgetRef); } catch {}
     } else if (fieldRef) {
       widgetRef = fieldRef;
-      try { widget = context.lookup(widgetRef); } catch { }
+      try { widget = context.lookup(widgetRef); } catch {}
       try {
-        const kidsArr = context.obj([widgetRef]);
+        const kidsArr = context.obj([ widgetRef ]);
         const fieldDict = context.obj({ FT: PDFName.of('Sig'), Kids: kidsArr, T: PDFString.of('Signature1') });
         try {
           const vMaybe = widget && widget.lookupMaybe ? widget.lookupMaybe(PDFName.of('V')) : null;
           if (vMaybe) fieldDict.set(PDFName.of('V'), vMaybe);
-        } catch { }
+        } catch {}
         fieldRef = context.register(fieldDict);
-        try { field = context.lookup(fieldRef); } catch { }
-        try { kidsArray = field.lookupMaybe ? field.lookupMaybe(PDFName.of('Kids')) : null; } catch { }
-        try { if (widget) widget.set(PDFName.of('Parent'), fieldRef); } catch { }
+        try { field = context.lookup(fieldRef); } catch {}
+        try { kidsArray = field.lookupMaybe ? field.lookupMaybe(PDFName.of('Kids')) : null; } catch {}
+        try { if (widget) widget.set(PDFName.of('Parent'), fieldRef); } catch {}
         fieldRefs[fieldsIndex] = fieldRef;
-      } catch { }
+      } catch {}
     }
-    if (!widget && widgetRef) { try { widget = context.lookup(widgetRef); } catch { } }
-    if (!widget && fieldRef) { widgetRef = fieldRef; try { widget = context.lookup(fieldRef); } catch { } }
+    if (!widget && widgetRef) { try { widget = context.lookup(widgetRef); } catch {} }
+    if (!widget && fieldRef) { widgetRef = fieldRef; try { widget = context.lookup(fieldRef); } catch {} }
     if (!widget || !fieldRef) return;
 
-    try { field.set(PDFName.of('FT'), PDFName.of('Sig')); } catch { }
+    try { field.set(PDFName.of('FT'), PDFName.of('Sig')); } catch {}
     try {
       const parentMaybe = widget && widget.lookupMaybe ? widget.lookupMaybe(PDFName.of('Parent')) : null;
       if (!parentMaybe && widgetRef && fieldRef && !pdfRefEquals(widgetRef, fieldRef)) widget.set(PDFName.of('Parent'), fieldRef);
-    } catch { }
+    } catch {}
 
-    try { field.set(PDFName.of('T'), PDFString.of('Signature1')); } catch { }
+    try { field.set(PDFName.of('T'), PDFString.of('Signature1')); } catch {}
 
     const cleanRefs = [];
     let hasField = false;
@@ -389,15 +296,15 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
     }
     if (fieldRef && !hasField) cleanRefs.push(fieldRef);
     fields = context.obj(cleanRefs);
-    try { acroForm.set(PDFName.of('Fields'), fields); } catch { }
+    try { acroForm.set(PDFName.of('Fields'), fields); } catch {}
 
     const widgetRefsToRemove = kidRefs.filter((ref) => !!ref);
     if (widgetRef && !widgetRefsToRemove.some((ref) => pdfRefEquals(ref, widgetRef))) widgetRefsToRemove.push(widgetRef);
 
     try {
-      if (widgetRef) field.set(PDFName.of('Kids'), context.obj([widgetRef]));
+      if (widgetRef) field.set(PDFName.of('Kids'), context.obj([ widgetRef ]));
       else if (field.delete) field.delete(PDFName.of('Kids'));
-    } catch { }
+    } catch {}
 
     const pageCount = pdfDoc.getPageCount();
     const tIndex = (requestedPageIndex === 'last') ? (pageCount - 1) : (requestedPageIndex && requestedPageIndex > 0 ? Math.min(pageCount - 1, requestedPageIndex - 1) : 0);
@@ -429,19 +336,19 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
     }
 
     const szp = targetPage.getSize();
-    if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) { x1 = 36; y1 = 36; x2 = 236; y2 = 86; }
-    if (x2 <= x1 || y2 <= y1) { x2 = Math.min(szp.width, x1 + 200); y2 = Math.min(szp.height, y1 + 50); }
+    if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) { x1=36; y1=36; x2=236; y2=86; }
+    if (x2 <= x1 || y2 <= y1) { x2 = Math.min(szp.width, x1+200); y2 = Math.min(szp.height, y1+50); }
 
-    try { widget.set(PDFName.of('Rect'), context.obj([x1, y1, x2, y2])); } catch { }
-    try { widget.set(PDFName.of('P'), targetPage.ref); } catch { }
+    try { widget.set(PDFName.of('Rect'), context.obj([x1, y1, x2, y2])); } catch {}
+    try { widget.set(PDFName.of('P'), targetPage.ref); } catch {}
 
     const helv = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const pad = (n) => String(n).padStart(2, '0');
-    const dt = signingTime || new Date();
-    const tsText = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+    const dt = requireSigningTime(signingTime);
+    const tsText = `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
     const line1 = `Digitally signed by ${userName}`;
     const line2 = `Date: ${tsText}`;
-    const fontSize = 10; const lh = 14; const padX = 6, padY = 6;
+    const fontSize = 10; const lh = 14; const padX=6, padY=6;
     const fitText = (t, maxW) => {
       let s = String(t);
       while (helv.widthOfTextAtSize(s, fontSize) > maxW && s.length > 1) s = s.slice(0, -1);
@@ -452,32 +359,32 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
       }
       return s;
     };
-    const maxTextW = Math.max(0, (x2 - x1) - padX * 2);
-    let line1Fit = fitText(line1, maxTextW);
-    let line2Fit = fitText(line2, maxTextW);
-    // Recalculate content width based on actual fitted text
-    let contentW = Math.max(helv.widthOfTextAtSize(line1Fit, fontSize), helv.widthOfTextAtSize(line2Fit, fontSize));
-    let w = Math.max(x2 - x1, Math.ceil(contentW) + padX * 2);
-    // If the fitted text is shorter than the original, expand the rectangle to fit the full text
-    if (helv.widthOfTextAtSize(line1, fontSize) + padX * 2 <= w) line1Fit = line1;
-    if (helv.widthOfTextAtSize(line2, fontSize) + padX * 2 <= w) line2Fit = line2;
-    contentW = Math.max(helv.widthOfTextAtSize(line1Fit, fontSize), helv.widthOfTextAtSize(line2Fit, fontSize));
-    w = Math.max(x2 - x1, Math.ceil(contentW) + padX * 2);
-    const h = Math.min(Math.max(0, y2 - y1), (2 * fontSize) + (lh - fontSize) + padY * 2);
-    let newX1 = x1, newY1 = y1, newX2 = x2, newY2 = y2;
+    const maxTextW = Math.max(0, (x2-x1) - padX*2);
+  let line1Fit = fitText(line1, maxTextW);
+  let line2Fit = fitText(line2, maxTextW);
+  // Recalculate content width based on actual fitted text
+  let contentW = Math.max(helv.widthOfTextAtSize(line1Fit, fontSize), helv.widthOfTextAtSize(line2Fit, fontSize));
+  let w = Math.max(x2-x1, Math.ceil(contentW) + padX*2);
+  // If the fitted text is shorter than the original, expand the rectangle to fit the full text
+  if (helv.widthOfTextAtSize(line1, fontSize) + padX*2 <= w) line1Fit = line1;
+  if (helv.widthOfTextAtSize(line2, fontSize) + padX*2 <= w) line2Fit = line2;
+  contentW = Math.max(helv.widthOfTextAtSize(line1Fit, fontSize), helv.widthOfTextAtSize(line2Fit, fontSize));
+  w = Math.max(x2-x1, Math.ceil(contentW) + padX*2);
+  const h = Math.min(Math.max(0, y2-y1), (2*fontSize) + (lh - fontSize) + padY*2);
+    let newX1=x1, newY1=y1, newX2=x2, newY2=y2;
     switch (anchor) {
-      case 'top-right': newX2 = x2; newX1 = newX2 - w; newY2 = y2; newY1 = newY2 - h; break;
-      case 'bottom-left': newX1 = x1; newX2 = newX1 + w; newY1 = y1; newY2 = newY1 + h; break;
-      case 'bottom-right': newX2 = x2; newX1 = newX2 - w; newY1 = y1; newY2 = newY1 + h; break;
-      case 'top-left': default: newX1 = x1; newX2 = newX1 + w; newY2 = y2; newY1 = newY2 - h; break;
+      case 'top-right': newX2=x2; newX1=newX2-w; newY2=y2; newY1=newY2-h; break;
+      case 'bottom-left': newX1=x1; newX2=newX1+w; newY1=y1; newY2=newY1+h; break;
+      case 'bottom-right': newX2=x2; newX1=newX2-w; newY1=y1; newY2=newY1+h; break;
+      case 'top-left': default: newX1=x1; newX2=newX1+w; newY2=y2; newY1=newY2-h; break;
     }
-    try { widget.set(PDFName.of('Rect'), context.obj([newX1, newY1, newX2, newY2])); } catch { }
+    try { widget.set(PDFName.of('Rect'), context.obj([newX1,newY1,newX2,newY2])); } catch {}
 
     const esc = (s) => String(s).replace(new RegExp('\\', 'g'), '\\').replace(/\(/g, '\(').replace(/\)/g, '\)');
     const content = ['BT', `/F1 ${fontSize} Tf`, `1 0 0 1 ${padX} ${Math.max(0, h - padY - fontSize)} Tm`, `(${esc(line1Fit)}) Tj`, `1 0 0 1 ${padX} ${Math.max(0, h - padY - fontSize - lh)} Tm`, `(${esc(line2Fit)}) Tj`, 'ET'].join('\n');
-    const apStream = context.stream(content, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, Math.max(1, w), Math.max(1, h)], Matrix: [1, 0, 0, 1, 0, 0], Resources: { Font: { F1: helv.ref } } });
-    try { widget.set(PDFName.of('AP'), context.obj({ N: context.register(apStream) })); } catch { }
-    try { const acro = pdfDoc.catalog.lookup(PDFName.of('AcroForm')); acro.set(PDFName.of('SigFlags'), PDFNumber.of(3)); if (pdfDoc.catalog.delete) pdfDoc.catalog.delete(PDFName.of('NeedAppearances')); } catch { }
+    const apStream = context.stream(content, { Type:'XObject', Subtype:'Form', BBox:[0,0, Math.max(1,w), Math.max(1,h)], Matrix:[1,0,0,1,0,0], Resources:{ Font:{ F1: helv.ref } } });
+    try { widget.set(PDFName.of('AP'), context.obj({ N: context.register(apStream) })); } catch {}
+    try { const acro = pdfDoc.catalog.lookup(PDFName.of('AcroForm')); acro.set(PDFName.of('SigFlags'), PDFNumber.of(3)); if (pdfDoc.catalog.delete) pdfDoc.catalog.delete(PDFName.of('NeedAppearances')); } catch {}
 
     const pages = pdfDoc.getPages();
     for (let i = 0; i < pages.length; i++) {
@@ -497,8 +404,8 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
         }
         if (i === tIndex && widgetRef) filtered.push(widgetRef);
         if (filtered.length) pg.node.set(PDFName.of('Annots'), pdfDoc.context.obj(filtered));
-        else { try { pg.node.delete && pg.node.delete(PDFName.of('Annots')); } catch { } }
-      } catch { }
+        else { try { pg.node.delete && pg.node.delete(PDFName.of('Annots')); } catch {} }
+      } catch {}
     }
     try {
       let annT = targetPage.node.lookupMaybe ? targetPage.node.lookupMaybe(PDFName.of('Annots')) : null;
@@ -513,36 +420,36 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
         items.push(widgetRef);
         targetPage.node.set(PDFName.of('Annots'), pdfDoc.context.obj(items));
       }
-    } catch { }
+    } catch {}
 
     try {
       // Draw all previous signature rectangles/text for this page
       if (Array.isArray(prevBoxes)) {
         for (const b of prevBoxes) {
-          let pageIdx = (b.pageIndex !== undefined) ? b.pageIndex : (b.page !== undefined ? b.page - 1 : 0);
+          let pageIdx = (b.pageIndex !== undefined) ? b.pageIndex : (b.page !== undefined ? b.page-1 : 0);
           if (pageIdx === targetIndexTMP && Array.isArray(b.rect)) {
             const [bx1, by1, bx2, by2] = b.rect.map(Number);
             const bw = Math.max(1, bx2 - bx1);
             const bh = Math.max(1, by2 - by1);
             // Draw rectangle for previous signature
-            targetPage.drawRectangle({ x: bx1, y: by1, width: bw, height: bh, color: rgb(1, 1, 1), opacity: 1, borderOpacity: 0 });
+            targetPage.drawRectangle({ x: bx1, y: by1, width: bw, height: bh, color: rgb(1,1,1), opacity: 1, borderOpacity: 0 });
             // Optionally, draw text for previous signature (if available)
             if (b.text1) {
-              targetPage.drawText(b.text1, { x: bx1 + padX, y: by2 - padY - fontSize, size: fontSize, font: helv, color: rgb(0, 0, 0) });
+              targetPage.drawText(b.text1, { x: bx1 + padX, y: by2 - padY - fontSize, size: fontSize, font: helv, color: rgb(0,0,0) });
             }
             if (b.text2) {
-              targetPage.drawText(b.text2, { x: bx1 + padX, y: by2 - padY - fontSize - lh, size: fontSize, font: helv, color: rgb(0, 0, 0) });
+              targetPage.drawText(b.text2, { x: bx1 + padX, y: by2 - padY - fontSize - lh, size: fontSize, font: helv, color: rgb(0,0,0) });
             }
           }
         }
       }
-      // Draw the new signature rectangle/text, left-aligned (like /sign/pdf)
-      const yTopDraw = Math.max(0, newY1 + h - padY - fontSize);
-      targetPage.drawRectangle({ x: newX1, y: newY1, width: Math.max(1, w), height: Math.max(1, h), color: rgb(1, 1, 1), opacity: 1, borderOpacity: 0 });
-      targetPage.drawText(line1Fit, { x: newX1 + padX, y: yTopDraw, size: fontSize, font: helv, color: rgb(0, 0, 0) });
-      targetPage.drawText(line2Fit, { x: newX1 + padX, y: Math.max(0, yTopDraw - lh), size: fontSize, font: helv, color: rgb(0, 0, 0) });
-    } catch { }
-  } catch { }
+  // Draw the new signature rectangle/text, left-aligned (like /sign/pdf)
+  const yTopDraw = Math.max(0, newY1 + h - padY - fontSize);
+  targetPage.drawRectangle({ x: newX1, y: newY1, width: Math.max(1, w), height: Math.max(1, h), color: rgb(1,1,1), opacity: 1, borderOpacity: 0 });
+  targetPage.drawText(line1Fit, { x: newX1 + padX, y: yTopDraw, size: fontSize, font: helv, color: rgb(0,0,0) });
+  targetPage.drawText(line2Fit, { x: newX1 + padX, y: Math.max(0, yTopDraw - lh), size: fontSize, font: helv, color: rgb(0,0,0) });
+    } catch {}
+  } catch {}
 }
 
 // Robustly load PDFs even when inputs have BOM/prefix bytes or minor issues
@@ -566,11 +473,11 @@ function normalizePdfBuffer(input) {
     if (!(buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46 && buf[4] === 0x2d)) {
       const at = buf.indexOf('%PDF-');
       if (at > 0) return buf.subarray(at);
-      const head = buf.subarray(0, Math.min(2 * 1024 * 1024, buf.length)).toString('latin1');
+      const head = buf.subarray(0, Math.min(2*1024*1024, buf.length)).toString('latin1');
       const at2 = head.indexOf('%PDF-');
       if (at2 > 0) return buf.subarray(at2);
     }
-  } catch { }
+  } catch {}
   return buf;
 }
 
@@ -604,6 +511,8 @@ function clampRectToPage(rect, pageSize) {
     return [x1, y1, x2, y2];
   } catch { return rect; }
 }
+
+
 function cors(req, res, next) {
   const origin = req.headers.origin || '';
   const allowed = ALLOW.includes('*') || ALLOW.includes(origin);
@@ -620,7 +529,17 @@ function cors(req, res, next) {
 function requireAuth(req, res, next) {
   if (!AUTH_TOKEN) return next(); // dev mode: no token set
   const provided = req.headers['x-dsc-auth'];
-  if (typeof provided === 'string' && provided === AUTH_TOKEN) return next();
+  // Constant-time comparison to prevent timing attacks
+  if (typeof provided === 'string' && provided.length === AUTH_TOKEN.length) {
+    const providedBuf = Buffer.from(provided, 'utf8');
+    const expectedBuf = Buffer.from(AUTH_TOKEN, 'utf8');
+    if (crypto.timingSafeEqual(providedBuf, expectedBuf)) {
+      return next();
+    }
+  }
+  // Log failed auth attempt
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  console.warn(`[SECURITY] Failed auth attempt from ${ip}`);
   return res.status(401).json({ ok: false, message: 'Unauthorized' });
 }
 
@@ -639,12 +558,12 @@ function getSlotHandle(p11, needToken = true) {
     for (const s of all) {
       let sh = null;
       if (Buffer.isBuffer(s)) sh = s;
-      else if (typeof s === 'number') { const b = Buffer.allocUnsafe(4); b.writeUInt32LE(s, 0); sh = b; }
-      else if (s && s.buffer && s.byteLength !== undefined) sh = Buffer.from(s.buffer, s.byteOffset || 0, s.byteLength);
+      else if (typeof s === 'number') { const b = Buffer.allocUnsafe(4); b.writeUInt32LE(s,0); sh = b; }
+      else if (s && s.buffer && s.byteLength !== undefined) sh = Buffer.from(s.buffer, s.byteOffset||0, s.byteLength);
       if (!sh) continue;
       try {
         const tmp = p11.C_OpenSession(sh, PKCS11.CKF_SERIAL_SESSION | PKCS11.CKF_RW_SESSION);
-        try { if (tmp) p11.C_CloseSession(tmp); } catch { }
+        try { if (tmp) p11.C_CloseSession(tmp); } catch {}
         return sh; // usable slot found
         // Optional hard override for testing: force top-left placement
         try {
@@ -659,15 +578,15 @@ function getSlotHandle(p11, needToken = true) {
             const y1tl = Math.max(0, y2tl - h);
             placeholderRect = clampRectToPage([x1tl, y1tl, x2tl, y2tl], szTMP);
           }
-        } catch { }
-      } catch { }
+        } catch {}
+      } catch {}
     }
     throw new Error(`No token present. Slots(with token): 0 / total: ${all.length}`);
   }
   const s0 = slots[0];
   if (Buffer.isBuffer(s0)) return s0;
-  if (typeof s0 === 'number') { const b = Buffer.allocUnsafe(4); b.writeUInt32LE(s0, 0); return b; }
-  if (s0 && s0.buffer && s0.byteLength !== undefined) return Buffer.from(s0.buffer, s0.byteOffset || 0, s0.byteLength);
+  if (typeof s0 === 'number') { const b = Buffer.allocUnsafe(4); b.writeUInt32LE(s0,0); return b; }
+  if (s0 && s0.buffer && s0.byteLength !== undefined) return Buffer.from(s0.buffer, s0.byteOffset||0, s0.byteLength);
   throw new Error('Unsupported slot handle type');
 }
 
@@ -680,11 +599,10 @@ function verifyRSASHA256(certDER, data, sig) {
   const v = crypto.createVerify('RSA-SHA256'); v.update(data); v.end();
   try { return v.verify(x.publicKey, sig); } catch { return false; }
 }
-
 function verifyRSAPKCS1_DI(certDER, di, sig) {
   const x = new crypto.X509Certificate(certDER);
   const em = crypto.publicDecrypt({ key: x.publicKey, padding: crypto.constants.RSA_NO_PADDING }, sig);
-  let i = 0; if (em[i++] !== 0x00 || em[i++] !== 0x01) return false; while (i < em.length && em[i] === 0xff) i++; if (em[i++] !== 0x00) return false;
+  let i = 0; if (em[i++]!==0x00 || em[i++]!==0x01) return false; while (i<em.length && em[i]===0xff) i++; if (em[i++]!==0x00) return false;
   return em.subarray(i).equals(di);
 }
 
@@ -693,17 +611,17 @@ function probePair(p11, s, privHandle, certDER) {
   try {
     p11.C_SignInit(s, { mechanism: PKCS11.CKM_SHA256_RSA_PKCS }, privHandle);
     let sig; try { sig = p11.C_Sign(s, msg); }
-    catch { const out = Buffer.alloc(4096); const r = p11.C_Sign(s, msg, out); sig = Buffer.isBuffer(r) ? r : out.subarray(0, r); }
-    if (verifyRSASHA256(certDER, msg, sig)) return { ok: true, mech: 'CKM_SHA256_RSA_PKCS' };
-  } catch { }
+    catch { const out = Buffer.alloc(4096); const r = p11.C_Sign(s, msg, out); sig = Buffer.isBuffer(r)?r:out.subarray(0,r); }
+    if (verifyRSASHA256(certDER, msg, sig)) return { ok:true, mech:'CKM_SHA256_RSA_PKCS' };
+  } catch {}
   try {
     const di = di256(crypto.createHash('sha256').update(msg).digest());
     p11.C_SignInit(s, { mechanism: PKCS11.CKM_RSA_PKCS }, privHandle);
     let sig; try { sig = p11.C_Sign(s, di); }
-    catch { const out = Buffer.alloc(4096); const r = p11.C_Sign(s, di, out); sig = Buffer.isBuffer(r) ? r : out.subarray(0, r); }
-    if (verifyRSAPKCS1_DI(certDER, di, sig)) return { ok: true, mech: 'CKM_RSA_PKCS' };
-  } catch { }
-  return { ok: false };
+    catch { const out = Buffer.alloc(4096); const r = p11.C_Sign(s, di, out); sig = Buffer.isBuffer(r)?r:out.subarray(0,r); }
+    if (verifyRSAPKCS1_DI(certDER, di, sig)) return { ok:true, mech:'CKM_RSA_PKCS' };
+  } catch {}
+  return { ok:false };
 }
 
 function detectSigningKey(dll, pin) { return pkcs11lib.detectSigningKey(dll, pin); }
@@ -716,11 +634,11 @@ function getAIAUrls(cert) {
   if (!inner || inner.constructor.name !== 'Sequence') return { caIssuers, ocsp };
   for (const ad of inner.valueBlock.value) {
     const oid = ad.valueBlock.value[0].valueBlock.toString();
-    const gn = ad.valueBlock.value[1];
+    const gn  = ad.valueBlock.value[1];
     if (gn.idBlock.tagClass === 3 && gn.idBlock.tagNumber === 6) {
       const uri = Buffer.from(gn.valueBlock.valueHex).toString('ascii').trim();
       if (oid === OID.aia_caIssuers) caIssuers.push(uri);
-      if (oid === OID.aia_ocsp) ocsp.push(uri);
+      if (oid === OID.aia_ocsp)     ocsp.push(uri);
     }
   }
   return { caIssuers, ocsp };
@@ -740,17 +658,17 @@ async function httpGetRaw(url) {
 }
 async function fetchChainViaAIA(startCertPkijs, maxDepth = 4) {
   const chain = []; let current = startCertPkijs; const seen = new Set();
-  for (let i = 0; i < maxDepth; i++) {
+  for (let i=0; i<maxDepth; i++) {
     const { caIssuers } = getAIAUrls(current); if (!caIssuers.length) break;
-    let nextDer = null, nextPkijs = null;
+    let nextDer=null, nextPkijs=null;
     for (const url of caIssuers) {
       try {
         const buf = await httpGetRaw(url);
         const der = /-----BEGIN CERTIFICATE-----/.test(buf.toString('utf8'))
-          ? Buffer.from(buf.toString('utf8').replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/[\r\n\s]/g, ''), 'base64')
+          ? Buffer.from(buf.toString('utf8').replace(/-----(BEGIN|END) CERTIFICATE-----/g,'').replace(/[\r\n\s]/g,''), 'base64')
           : buf;
         const a = asn1js.fromBER(ab(der)); nextPkijs = new pkijs.Certificate({ schema: a.result }); nextDer = der; break;
-      } catch { }
+      } catch {}
     }
     if (!nextPkijs) break;
     const fp = crypto.createHash('sha1').update(nextDer).digest('hex'); if (seen.has(fp)) break; seen.add(fp);
@@ -763,7 +681,7 @@ async function fetchChainViaAIA(startCertPkijs, maxDepth = 4) {
 
 function makeSigningCertificateV2(certDER) {
   const certHash = crypto.createHash('sha256').update(certDER).digest();
-  return new asn1js.Sequence({ value: [new asn1js.Sequence({ value: [new asn1js.Sequence({ value: [new asn1js.OctetString({ valueHex: ab(certHash) })] })] })] });
+  return new asn1js.Sequence({ value: [ new asn1js.Sequence({ value: [ new asn1js.Sequence({ value: [ new asn1js.OctetString({ valueHex: ab(certHash) }) ] }) ] }) ] });
 }
 
 // Remove existing signature fields and DocMDP/Perms so we can re-sign as a fresh PDF.
@@ -779,10 +697,10 @@ async function stripSignaturesAndPerms(pdfBytes) {
     try {
       const perms = catalog.lookupMaybe ? catalog.lookupMaybe(PDFName.of('Perms')) : null;
       if (perms && perms.delete) perms.delete(PDFName.of('DocMDP'));
-    } catch { }
+    } catch {}
 
     // Enable viewer-generated appearances as a safe default
-    try { catalog.set(PDFName.of('NeedAppearances'), context.obj(true)); } catch { }
+    try { catalog.set(PDFName.of('NeedAppearances'), context.obj(true)); } catch {}
 
     // Remove signature fields from AcroForm and associated widgets from pages
     try {
@@ -796,7 +714,7 @@ async function stripSignaturesAndPerms(pdfBytes) {
             const ref = fields.get(i);
             const field = context.lookup(ref);
             let isSig = false;
-            try { const ft = field.lookup(PDFName.of('FT')); isSig = (ft && ft.toString && ft.toString() === '/Sig'); } catch { }
+            try { const ft = field.lookup(PDFName.of('FT')); isSig = (ft && ft.toString && ft.toString() === '/Sig'); } catch {}
             if (isSig) {
               sigFieldRefs.add(ref && ref.toString ? ref.toString() : String(ref));
             } else {
@@ -804,7 +722,7 @@ async function stripSignaturesAndPerms(pdfBytes) {
             }
           }
           // Replace fields array with non-signature fields
-          try { if (fields.array) { fields.array = toKeep; } } catch { }
+          try { if (fields.array) { fields.array = toKeep; } } catch {}
 
           // Remove widgets that belong to removed signature fields
           const pages = pdfDoc.getPages();
@@ -824,18 +742,18 @@ async function stripSignaturesAndPerms(pdfBytes) {
                     const key = parentRef && parentRef.toString ? parentRef.toString() : (aref && aref.toString ? aref.toString() : '');
                     if (sigFieldRefs.has(key)) drop = true;
                   }
-                } catch { }
+                } catch {}
                 if (!drop) keepAnnots.push(aref);
               }
               // Replace annotations array
-              try { if (annots.array) { annots.array = keepAnnots; } } catch { }
-            } catch { }
+              try { if (annots.array) { annots.array = keepAnnots; } } catch {}
+            } catch {}
           }
         }
         // Normalize SigFlags
-        try { acro.set(PDFName.of('SigFlags'), PDFNumber.of(0)); } catch { }
+        try { acro.set(PDFName.of('SigFlags'), PDFNumber.of(0)); } catch {}
       }
-    } catch { }
+    } catch {}
 
     return await pdfDoc.save({ useObjectStreams: false });
   } catch (e) {
@@ -854,26 +772,24 @@ async function extractPreviousSignerLines(pdfBytes) {
     // Build a map of page ref key -> index
     const pageMap = new Map();
     const pages = doc.getPages();
-    for (let i = 0; i < pages.length; i++) { try { pageMap.set(pageKey(pages[i].ref), i); } catch { } }
+    for (let i = 0; i < pages.length; i++) { try { pageMap.set(pageKey(pages[i].ref), i); } catch {} }
 
-    let acro = null; try { acro = catalog.lookup(PDFName.of('AcroForm')); } catch { }
+    let acro = null; try { acro = catalog.lookup(PDFName.of('AcroForm')); } catch {}
     if (!acro) return [];
-    let fields = null; try { fields = acro.lookup(PDFName.of('Fields')); } catch { }
+    let fields = null; try { fields = acro.lookup(PDFName.of('Fields')); } catch {}
     if (!fields || !fields.size || !fields.get) return [];
     const results = [];
     for (let i = 0; i < fields.size(); i++) {
       try {
         const ref = fields.get(i); const field = context.lookup(ref);
-        let isSig = false; try { const ft = field.lookup(PDFName.of('FT')); isSig = (ft && ft.toString && ft.toString() === '/Sig'); } catch { }
+        let isSig = false; try { const ft = field.lookup(PDFName.of('FT')); isSig = (ft && ft.toString && ft.toString() === '/Sig'); } catch {}
         if (!isSig) continue;
         let name = ''; let when = '';
-        try {
-          const v = field.lookup(PDFName.of('V')); if (v) {
-            try { const n = v.lookup(PDFName.of('Name')); if (n && n.decodeText) name = n.decodeText(); } catch { }
-            try { const m = v.lookup(PDFName.of('M')); if (m && m.decodeText) when = m.decodeText(); } catch { }
-          }
-        } catch { }
-        if (!name) { try { const t = field.lookup(PDFName.of('T')); if (t && t.decodeText) name = t.decodeText(); } catch { } }
+        try { const v = field.lookup(PDFName.of('V')); if (v) {
+          try { const n = v.lookup(PDFName.of('Name')); if (n && n.decodeText) name = n.decodeText(); } catch {}
+          try { const m = v.lookup(PDFName.of('M')); if (m && m.decodeText) when = m.decodeText(); } catch {}
+        }} catch {}
+        if (!name) { try { const t = field.lookup(PDFName.of('T')); if (t && t.decodeText) name = t.decodeText(); } catch {} }
 
         const widgets = [];
         try {
@@ -881,7 +797,7 @@ async function extractPreviousSignerLines(pdfBytes) {
           if (kids && kids.size && kids.get) {
             for (let k = 0; k < kids.size(); k++) widgets.push(kids.get(k));
           }
-        } catch { }
+        } catch {}
         if (widgets.length === 0) widgets.push(ref);
 
         for (const wref of widgets) {
@@ -901,7 +817,7 @@ async function extractPreviousSignerLines(pdfBytes) {
                 pidx = pageMap.get(key);
                 foundPage = true;
               }
-            } catch { }
+            } catch {}
             // Fallback: if /P is missing or not found, search all pages for this widget annotation
             if (!foundPage) {
               for (let i = 0; i < pages.length; i++) {
@@ -925,16 +841,16 @@ async function extractPreviousSignerLines(pdfBytes) {
                     }
                   }
                   if (foundPage) break;
-                } catch { }
+                } catch {}
               }
             }
             results.push({ pageIndex: pidx, rect: [x1, y1, x2, y2], name, when });
-          } catch { }
+          } catch {}
         }
-      } catch { }
+      } catch {}
     }
     return results;
-  } catch { }
+  } catch {}
   return [];
 }
 
@@ -999,7 +915,6 @@ class TokenSigner extends Signer {
       certificates: [ this.signerCert, ...this.intermediates ],
       signerInfos: []
     });
-
     const si = new pkijs.SignerInfo({
       version: 1,
       sid: new pkijs.IssuerAndSerialNumber({ issuer: this.signerCert.issuer, serialNumber: this.signerCert.serialNumber }),
@@ -1007,7 +922,6 @@ class TokenSigner extends Signer {
       signatureAlgorithm: new pkijs.AlgorithmIdentifier({ algorithmId: OID.sha256WithRSA }),
       signedAttrs: new pkijs.SignedAndUnsignedAttributes({ type: 0, attributes: sortedAttrs })
     });
-
     sd.signerInfos.push(si);
 
     const sortedSchemas = sortedAttrEntries.map((entry) => asn1js.fromBER(ab(entry.der)).result);
@@ -1044,20 +958,20 @@ async function calculateDynamicRect(pdfDoc, page, text, position) {
   const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const fontSize = 9;
   const padding = 4;
-
+  
   // Calculate text dimensions
   const textWidth = font.widthOfTextAtSize(text, fontSize);
   const textHeight = font.heightAtSize(fontSize);
-
+  
   // Add padding for signature visual
   const width = textWidth + (padding * 2);
   const height = textHeight + (padding * 2);
-
+  
   const pageWidth = page.getWidth();
   const pageHeight = page.getHeight();
-
+  
   let x1, y1, x2, y2;
-
+  
   if (Array.isArray(position)) {
     // Fixed position provided
     [x1, y1] = position;
@@ -1070,7 +984,7 @@ async function calculateDynamicRect(pdfDoc, page, text, position) {
     x2 = pageWidth - padding;
     y2 = height + padding;
   }
-
+  
   return clampRectToPage([x1, y1, x2, y2], { width: pageWidth, height: pageHeight });
 }
 
@@ -1080,6 +994,26 @@ function assertNoExistingSignature(pdfBytes) { return pdfUtil.assertNoExistingSi
 async function fetchIntermediatesIfRequested(signerCert, embed) { if (!embed) return []; return pdfUtil.fetchChainViaAIA(signerCert); }
 
 function parseLocalTime(s) { return pdfUtil.parseLocalTime(s); }
+
+function requireSigningTime(raw) {
+  if (raw === undefined || raw === null || raw === '') {
+    const err = new Error("signingTime is required (use 'YYYY-MM-DD HH:mm:ss')");
+    err.code = 'SIGNING_TIME_REQUIRED';
+    throw err;
+  }
+  if (raw instanceof Date) {
+    if (!Number.isNaN(raw.getTime())) return raw;
+    const invalid = new Error('signingTime is invalid');
+    invalid.code = 'SIGNING_TIME_INVALID';
+    throw invalid;
+  }
+  try {
+    return parseLocalTime(String(raw));
+  } catch (e) {
+    if (e && !e.code) e.code = 'SIGNING_TIME_INVALID';
+    throw e;
+  }
+}
 
 // Normalize page selection from request to a consistent value
 // Returns 'last' or a positive integer (1-based)
@@ -1105,8 +1039,8 @@ async function applyTextStampToAllPages(pdfBytes, userName, signingTime, rect, a
   const x1d = Math.min(rx1, rx2), x2d = Math.max(rx1, rx2);
   const y1d = Math.min(ry1, ry2), y2d = Math.max(ry1, ry2);
   const pad = (n) => String(n).padStart(2, '0');
-  const dt = signingTime || new Date();
-  const tsText = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+  const dt = requireSigningTime(signingTime);
+  const tsText = `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
   const line1 = `Digitally signed by ${userName}`;
   const line2 = `Date: ${tsText}`;
   const fontSize = 10;
@@ -1129,23 +1063,23 @@ async function applyTextStampToAllPages(pdfBytes, userName, signingTime, rect, a
       if (helv.widthOfTextAtSize(s, fontSize) > maxW && s.length > 1) s = s.slice(0, -1);
       return s;
     };
-    const maxTextW = Math.max(0, wMax - padX * 2);
+    const maxTextW = Math.max(0, wMax - padX*2);
     const line1Fit = fitText(line1, maxTextW);
     const line2Fit = fitText(line2, maxTextW);
     const contentW = Math.max(helv.widthOfTextAtSize(line1Fit, fontSize), helv.widthOfTextAtSize(line2Fit, fontSize));
-    const w = Math.min(wMax, Math.ceil(contentW) + padX * 2);
-    const h = Math.min(hMax, (2 * fontSize) + (lh - fontSize) + padY * 2);
+    const w = Math.min(wMax, Math.ceil(contentW) + padX*2);
+    const h = Math.min(hMax, (2*fontSize) + (lh - fontSize) + padY*2);
     let newX1 = x1, newY1 = y1, newX2 = x2, newY2 = y2;
     switch (anchor) {
-      case 'top-right': newX2 = x2; newX1 = newX2 - w; newY2 = y2; newY1 = newY2 - h; break;
-      case 'bottom-left': newX1 = x1; newX2 = newX1 + w; newY1 = y1; newY2 = newY1 + h; break;
-      case 'bottom-right': newX2 = x2; newX1 = newX2 - w; newY1 = y1; newY2 = newY1 + h; break;
-      case 'top-left': default: newX1 = x1; newX2 = newX1 + w; newY2 = y2; newY1 = newY2 - h; break;
+      case 'top-right': newX2=x2; newX1=newX2-w; newY2=y2; newY1=newY2-h; break;
+      case 'bottom-left': newX1=x1; newX2=newX1+w; newY1=y1; newY2=newY1+h; break;
+      case 'bottom-right': newX2=x2; newX1=newX2-w; newY1=y1; newY2=newY1+h; break;
+      case 'top-left': default: newX1=x1; newX2=newX1+w; newY2=y2; newY1=newY2-h; break;
     }
-    try { page.drawRectangle({ x: newX1, y: newY1, width: Math.max(1, w), height: Math.max(1, h), color: rgb(1, 1, 1), opacity: 0.85, borderOpacity: 0 }); } catch { }
+    try { page.drawRectangle({ x: newX1, y: newY1, width: Math.max(1,w), height: Math.max(1,h), color: rgb(1,1,1), opacity: 0.85, borderOpacity: 0 }); } catch {}
     const yTop = Math.max(0, newY1 + h - padY - fontSize);
-    try { page.drawText(line1Fit, { x: newX1 + padX, y: yTop, size: fontSize, font: helv, color: rgb(0, 0, 0) }); } catch { }
-    try { page.drawText(line2Fit, { x: newX1 + padX, y: Math.max(0, yTop - lh), size: fontSize, font: helv, color: rgb(0, 0, 0) }); } catch { }
+    try { page.drawText(line1Fit, { x: newX1 + padX, y: yTop, size: fontSize, font: helv, color: rgb(0,0,0) }); } catch {}
+    try { page.drawText(line2Fit, { x: newX1 + padX, y: Math.max(0, yTop - lh), size: fontSize, font: helv, color: rgb(0,0,0) }); } catch {}
   }
   return await pdfDoc.save({ useObjectStreams: false });
 }
@@ -1156,9 +1090,9 @@ async function buildPlaceholderWithVisibleStamp(pdfInputBytes, userName, reason,
   let pdfForPlaceholder = pdfInputBytes;
   try {
     const pdfDoc = await PDFDocument.load(pdfInputBytes);
-    try { pdfDoc.catalog.set(PDFName.of('NeedAppearances'), pdfDoc.context.obj(true)); } catch { }
+    try { pdfDoc.catalog.set(PDFName.of('NeedAppearances'), pdfDoc.context.obj(true)); } catch {}
     pdfForPlaceholder = await pdfDoc.save({ useObjectStreams: false });
-  } catch { }
+  } catch {}
 
   // Only pre-stamp all pages if explicitly requested (stampAllPages)
   if (stampAllPages === true) {
@@ -1185,242 +1119,99 @@ async function buildPlaceholderWithVisibleStamp(pdfInputBytes, userName, reason,
           const y1 = Math.max(0, y2 - height);
           stampRect = [x1, y1, x2, y2];
         }
-      } catch { }
+      } catch {}
       pdfForPlaceholder = await applyTextStampToAllPages(pdfForPlaceholder, userName, signingTime, stampRect, anchor, requestedPageIndex);
-    } catch { }
+    } catch {}
   }
 
   const widgetRect = rectOverride || SIGN_RECT;
+  
+  // First, apply visible stamp using pdf-lib
   const pdfDoc2 = await PDFDocument.load(pdfForPlaceholder);
-  pdflibAddPlaceholder({
-    pdfDoc: pdfDoc2,
-    reason: String(reason || ''),
-    contactInfo: '',
-    location: '',
-    name: String(userName || ''),
-    signingTime,
-    signatureLength: 32768,
-    widgetRect,
-  });
-
+  
+  // Determine target page
+  const pageCount = pdfDoc2.getPageCount();
+  const tIndex = (requestedPageIndex === 'last') ? (pageCount - 1)
+    : (requestedPageIndex && requestedPageIndex > 0 ? Math.min(pageCount - 1, requestedPageIndex - 1) : 0);
+  const targetPage = pdfDoc2.getPages()[tIndex];
+  
+  // Calculate final rect
+  let x1, y1, x2, y2;
+  if (rectOverride) {
+    if ((rectMode || 'pdf') === 'top-left') {
+      const arr = rectOverride.map((n) => parseInt(n, 10));
+      const left = Number.isFinite(arr[0]) ? arr[0] : 0;
+      const top = Number.isFinite(arr[1]) ? arr[1] : 0;
+      const sz = targetPage.getSize();
+      const defW = Math.max(1, Math.min(200, Math.floor(sz.width - Math.max(0, left))));
+      const defH = Math.max(1, Math.min(50, Math.floor(sz.height - Math.max(0, top))));
+      const Wd = (arr.length >= 3 && Number.isFinite(arr[2])) ? Math.max(1, arr[2]) : defW;
+      const Ht = (arr.length >= 4 && Number.isFinite(arr[3])) ? Math.max(1, arr[3]) : defH;
+      x1 = Math.max(0, left);
+      const y2tl = Math.max(0, sz.height - top);
+      x2 = Math.min(sz.width, x1 + Wd);
+      y1 = Math.max(0, y2tl - Ht);
+      y2 = y2tl;
+    } else {
+      const [rx1, ry1, rx2, ry2] = rectOverride;
+      x1 = Math.min(rx1, rx2); x2 = Math.max(rx1, rx2);
+      y1 = Math.min(ry1, ry2); y2 = Math.max(ry1, ry2);
+    }
+  } else {
+    [x1, y1, x2, y2] = widgetRect;
+  }
+  
+  // Build visible stamp appearance
+  const helv = await pdfDoc2.embedFont(StandardFonts.Helvetica);
+  const pad = (n) => String(n).padStart(2, '0');
+  const dt = requireSigningTime(signingTime);
+  const tsText = `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+  const line1 = `Digitally signed by ${userName}`;
+  const line2 = `Date: ${tsText}`;
+  const fontSize = 10; const lh = 14; const padX=6, padY=6;
+  const fitText = (t, maxW) => { let s = String(t); while (helv.widthOfTextAtSize(s, fontSize) > maxW && s.length > 1) s = s.slice(0, -1); return s; };
+  const maxTextW = Math.max(0, (x2-x1) - padX*2);
+  const line1Fit = fitText(line1, maxTextW);
+  const line2Fit = fitText(line2, maxTextW);
+  const contentW = Math.max(helv.widthOfTextAtSize(line1Fit, fontSize), helv.widthOfTextAtSize(line2Fit, fontSize));
+  const w = Math.min(Math.max(0, x2-x1), Math.ceil(contentW) + padX*2);
+  const h = Math.min(Math.max(0, y2-y1), (2*fontSize) + (lh - fontSize) + padY*2);
+  
+  // Shrink and align within rect per anchor
+  let newX1=x1, newY1=y1, newX2=x2, newY2=y2;
+  switch (anchor) { 
+    case 'top-right': newX2=x2; newX1=newX2-w; newY2=y2; newY1=newY2-h; break; 
+    case 'bottom-left': newX1=x1; newX2=newX1+w; newY1=y1; newY2=newY1+h; break; 
+    case 'bottom-right': newX2=x2; newX1=newX2-w; newY1=y1; newY2=newY1+h; break; 
+    case 'top-left': 
+    default: newX1=x1; newX2=newX1+w; newY2=y2; newY1=newY2-h; break; 
+  }
+  
+  // Draw stamp on page
   try {
-    const context = pdfDoc2.context;
-    const acroForm = pdfDoc2.catalog.lookup(PDFName.of('AcroForm'));
-    const fields = acroForm.lookup(PDFName.of('Fields'));
-    const fieldsCount = (() => { try { return fields.size ? fields.size() : (fields.array ? fields.array.length : 0); } catch { return 0; } })();
-    const fieldsIndex = fieldsCount > 0 ? (fieldsCount - 1) : 0;
-    let fieldRef = null;
-    let field = null;
-    try { fieldRef = fields.get ? fields.get(fieldsIndex) : (fields.array ? fields.array[fieldsIndex] : null); } catch { }
-    if (fieldRef) { try { field = context.lookup(fieldRef); } catch { } }
-    let widgetRef = null;
-    let widget = null;
-    let kids = null;
-    try { kids = field && field.lookupMaybe ? field.lookupMaybe(PDFName.of('Kids')) : null; } catch { }
-    let kidsCount = 0;
-    if (kids) { try { kidsCount = kids.size ? kids.size() : (kids.array ? kids.array.length : 0); } catch { } }
-    if (kids && kidsCount > 0) {
-      try { widgetRef = kids.get ? kids.get(0) : (kids.array ? kids.array[0] : null); if (widgetRef) widget = context.lookup(widgetRef); } catch { }
-    } else if (fieldRef) {
-      widgetRef = fieldRef;
-      widget = field;
-      try {
-        const kidsArr = context.obj([widgetRef]);
-        const fieldDict = context.obj({ FT: PDFName.of('Sig'), Kids: kidsArr, T: PDFString.of('Signature1') });
-        try {
-          const vMaybe = widget && widget.lookupMaybe ? widget.lookupMaybe(PDFName.of('V')) : null;
-          if (vMaybe) fieldDict.set(PDFName.of('V'), vMaybe);
-        } catch { }
-        fieldRef = context.register(fieldDict);
-        try { field = context.lookup(fieldRef); } catch { }
-        try { kids = field.lookupMaybe ? field.lookupMaybe(PDFName.of('Kids')) : null; } catch { }
-        try { if (widget) widget.set(PDFName.of('Parent'), fieldRef); } catch { }
-        let replaced = false;
-        try {
-          if (fields && fields.set && fieldsCount > 0) { fields.set(fieldsIndex, fieldRef); replaced = true; }
-        } catch { }
-        if (!replaced) {
-          const arr = [];
-          if (fieldsCount === 0) arr.push(fieldRef);
-          else {
-            for (let i = 0; i < fieldsCount; i++) {
-              let ref = null;
-              try { ref = fields.get ? fields.get(i) : null; } catch { }
-              if (!ref && fields && fields.array && i < fields.array.length) ref = fields.array[i];
-              arr.push(i === fieldsIndex ? fieldRef : ref);
-            }
-          }
-          acroForm.set(PDFName.of('Fields'), context.obj(arr));
-        }
-      } catch { }
-    }
-    if (!widget && fieldRef) { widgetRef = fieldRef; widget = field; }
-    // Determine target page
-    const pageCount = pdfDoc2.getPageCount();
-    const tIndex = (requestedPageIndex === 'last') ? (pageCount - 1)
-      : (requestedPageIndex && requestedPageIndex > 0 ? Math.min(pageCount - 1, requestedPageIndex - 1) : 0);
-    const targetPage = pdfDoc2.getPages()[tIndex];
-    // Read rect safely
-    let x1, y1, x2, y2;
-    try { const rectArr = widget.lookup(PDFName.of('Rect')); x1 = rectArr.get(0).asNumber(); y1 = rectArr.get(1).asNumber(); x2 = rectArr.get(2).asNumber(); y2 = rectArr.get(3).asNumber(); }
-    catch { [x1, y1, x2, y2] = widgetRect; }
-    // Ensure field type and parent/kids linkage
-    try { field.set(PDFName.of('FT'), PDFName.of('Sig')); } catch { }
-    try {
-      const parentMaybe = widget && widget.lookupMaybe ? widget.lookupMaybe(PDFName.of('Parent')) : null;
-      if (!parentMaybe && widgetRef && fieldRef && widgetRef !== fieldRef) widget.set(PDFName.of('Parent'), fieldRef);
-    } catch { }
-    try {
-      let kids = field.lookupMaybe ? field.lookupMaybe(PDFName.of('Kids')) : null;
-      if (!kids) field.set(PDFName.of('Kids'), context.obj([widgetRef]));
-      else if (kids.push) {
-        let has = false; try { const size = kids.size ? kids.size() : (kids.array ? kids.array.length : 0); for (let i = 0; i < size; i++) { const r = kids.get ? kids.get(i) : kids.array[i]; if (r === widgetRef) { has = true; break; } } } catch { }
-        if (!has) kids.push(widgetRef);
-      }
-    } catch { }
-
-    // Apply rect override
-    if (rectOverride) {
-      if ((rectMode || 'pdf') === 'top-left') {
-        const arr = rectOverride.map((n) => parseInt(n, 10));
-        const left = Number.isFinite(arr[0]) ? arr[0] : 0;
-        const top = Number.isFinite(arr[1]) ? arr[1] : 0;
-        const sz = targetPage.getSize();
-        const defW = Math.max(1, Math.min(200, Math.floor(sz.width - Math.max(0, left))));
-        const defH = Math.max(1, Math.min(50, Math.floor(sz.height - Math.max(0, top))));
-        const Wd = (arr.length >= 3 && Number.isFinite(arr[2])) ? Math.max(1, arr[2]) : defW;
-        const Ht = (arr.length >= 4 && Number.isFinite(arr[3])) ? Math.max(1, arr[3]) : defH;
-        x1 = Math.max(0, left);
-        const y2tl = Math.max(0, sz.height - top);
-        x2 = Math.min(sz.width, x1 + Wd);
-        y1 = Math.max(0, y2tl - Ht);
-        y2 = y2tl;
-      } else {
-        const [rx1, ry1, rx2, ry2] = rectOverride;
-        x1 = Math.min(rx1, rx2); x2 = Math.max(rx1, rx2);
-        y1 = Math.min(ry1, ry2); y2 = Math.max(ry1, ry2);
-      }
-      try { widget.set(PDFName.of('Rect'), context.obj([x1, y1, x2, y2])); } catch { }
-    }
-    // Ensure sane rect
-    const szp = targetPage.getSize();
-    if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) { x1 = 36; y1 = 36; x2 = 236; y2 = 86; try { widget.set(PDFName.of('Rect'), context.obj([x1, y1, x2, y2])); } catch { } }
-    if (x2 <= x1 || y2 <= y1) { x2 = Math.min(szp.width, x1 + 200); y2 = Math.min(szp.height, y1 + 50); try { widget.set(PDFName.of('Rect'), context.obj([x1, y1, x2, y2])); } catch { } }
-
-    // Build AP + draw text
-    const helv = await pdfDoc2.embedFont(StandardFonts.Helvetica);
-    const pad = (n) => String(n).padStart(2, '0');
-    const dt = signingTime || new Date();
-    const tsText = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
-    const line1 = `Digitally signed by ${userName}`;
-    const line2 = `Date: ${tsText}`;
-    const fontSize = 10; const lh = 14; const padX = 6, padY = 6;
-    const fitText = (t, maxW) => { let s = String(t); while (helv.widthOfTextAtSize(s, fontSize) > maxW && s.length > 1) s = s.slice(0, -1); return s; };
-    const maxTextW = Math.max(0, (x2 - x1) - padX * 2);
-    const line1Fit = fitText(line1, maxTextW);
-    const line2Fit = fitText(line2, maxTextW);
-    const contentW = Math.max(helv.widthOfTextAtSize(line1Fit, fontSize), helv.widthOfTextAtSize(line2Fit, fontSize));
-    const w = Math.min(Math.max(0, x2 - x1), Math.ceil(contentW) + padX * 2);
-    const h = Math.min(Math.max(0, y2 - y1), (2 * fontSize) + (lh - fontSize) + padY * 2);
-    // Shrink and align within rect per anchor
-    let newX1 = x1, newY1 = y1, newX2 = x2, newY2 = y2;
-    switch (anchor) { case 'top-right': newX2 = x2; newX1 = newX2 - w; newY2 = y2; newY1 = newY2 - h; break; case 'bottom-left': newX1 = x1; newX2 = newX1 + w; newY1 = y1; newY2 = newY1 + h; break; case 'bottom-right': newX2 = x2; newX1 = newX2 - w; newY1 = y1; newY2 = newY1 + h; break; case 'top-left': default: newX1 = x1; newX2 = newX1 + w; newY2 = y2; newY1 = newY2 - h; break; }
-    try { widget.set(PDFName.of('Rect'), context.obj([newX1, newY1, newX2, newY2])); } catch { }
-
-    // Ensure we have a real widget annotation ref (not the field ref)
-    try {
-      let isRealWidget = false;
-      try {
-        const subtype = widget.lookupMaybe ? widget.lookupMaybe(PDFName.of('Subtype')) : null;
-        if (subtype && subtype.name && typeof subtype.name === 'string') {
-          isRealWidget = (subtype.name === 'Widget');
-        }
-      } catch { }
-      if (!isRealWidget || widgetRef === fieldRef) {
-        const newAnnot = context.obj({ Type: 'Annot', Subtype: 'Widget', Rect: [newX1, newY1, newX2, newY2], P: targetPage.ref, F: 4, Parent: fieldRef });
-        const newAnnotRef = context.register(newAnnot);
-        try {
-          let kids = field.lookupMaybe ? field.lookupMaybe(PDFName.of('Kids')) : null;
-          if (!kids) field.set(PDFName.of('Kids'), context.obj([newAnnotRef]));
-          else if (kids.push) kids.push(newAnnotRef);
-        } catch { }
-        widgetRef = newAnnotRef;
-        widget = context.lookup(widgetRef);
-      }
-    } catch { }
-    // Last resort: if we still don't have a widgetRef, create one now
-    if (!widgetRef) {
-      try {
-        const newAnnot = context.obj({ Type: 'Annot', Subtype: 'Widget', Rect: [newX1, newY1, newX2, newY2], P: targetPage.ref, F: 4, Parent: fieldRef });
-        widgetRef = context.register(newAnnot);
-        widget = context.lookup(widgetRef);
-        try {
-          let kids = field.lookupMaybe ? field.lookupMaybe(PDFName.of('Kids')) : null;
-          if (!kids) field.set(PDFName.of('Kids'), context.obj([widgetRef]));
-          else if (kids.push) kids.push(widgetRef);
-        } catch { }
-      } catch { }
-    }
-
-    const esc = (s) => String(s).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-    const content = ['BT', `/F1 ${fontSize} Tf`, `1 0 0 1 ${padX} ${Math.max(0, h - padY - fontSize)} Tm`, `(${esc(line1Fit)}) Tj`, `1 0 0 1 ${padX} ${Math.max(0, h - padY - fontSize - lh)} Tm`, `(${esc(line2Fit)}) Tj`, 'ET'].join('\n');
-    const apStream = context.stream(content, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, Math.max(1, w), Math.max(1, h)], Matrix: [1, 0, 0, 1, 0, 0], Resources: { Font: { F1: helv.ref } } });
-    try { widget.set(PDFName.of('AP'), context.obj({ N: context.register(apStream) })); } catch { }
-    try { const acro = pdfDoc2.catalog.lookup(PDFName.of('AcroForm')); acro.set(PDFName.of('SigFlags'), PDFNumber.of(3)); if (pdfDoc2.catalog.delete) pdfDoc2.catalog.delete(PDFName.of('NeedAppearances')); } catch { }
-    // Ensure widget is attached ONLY to the target page (move from first page to last)
-    try {
-      // Set widget's /P to target page
-      try { widget.set(PDFName.of('P'), targetPage.ref); } catch { }
-      // Remove widget from Annots on all other pages; ensure present on target page
-      const pages = pdfDoc2.getPages();
-      for (let i = 0; i < pages.length; i++) {
-        const pg = pages[i];
-        try {
-          let ann = pg.node.lookupMaybe ? pg.node.lookupMaybe(PDFName.of('Annots')) : null;
-          let arr = [];
-          if (ann) {
-            if (ann.size && ann.get) { for (let j = 0; j < ann.size(); j++) arr.push(ann.get(j)); }
-            else if (ann.array) { for (const r of ann.array) arr.push(r); }
-          }
-          // Filter out any accidental fieldRef entries and any existing widgetRef on non-target pages
-          const filtered = [];
-          for (const r of arr) {
-            if (r === fieldRef) continue; // never keep field as annot
-            if (i !== tIndex && r === widgetRef) continue; // drop widget from non-target pages
-            filtered.push(r);
-          }
-          if (i === tIndex && widgetRef) filtered.push(widgetRef); // ensure present on target page
-          if (filtered.length) pg.node.set(PDFName.of('Annots'), pdfDoc2.context.obj(filtered));
-          else { try { pg.node.delete && pg.node.delete(PDFName.of('Annots')); } catch { } }
-        } catch { }
-      }
-      // Verify target page Annots has the widget; if not, add it explicitly
-      try {
-        let annT = targetPage.node.lookupMaybe ? targetPage.node.lookupMaybe(PDFName.of('Annots')) : null;
-        let items = [];
-        if (annT) {
-          if (annT.size && annT.get) { for (let j = 0; j < annT.size(); j++) items.push(annT.get(j)); }
-          else if (annT.array) { for (const r of annT.array) items.push(r); }
-        }
-        let presentT = false;
-        for (const r of items) { if (r === widgetRef) { presentT = true; break; } }
-        if (!presentT && widgetRef) {
-          items.push(widgetRef);
-          targetPage.node.set(PDFName.of('Annots'), pdfDoc2.context.obj(items));
-        }
-      } catch { }
-    } catch { }
-    // Draw into page content too
-    try {
-      const yTopDraw = Math.max(0, newY1 + (newY2 - newY1) - padY - fontSize);
-      try { targetPage.drawRectangle({ x: newX1, y: newY1, width: Math.max(1, w), height: Math.max(1, h), color: rgb(1, 1, 1), opacity: 1, borderOpacity: 0 }); } catch { }
-      try { targetPage.drawText(line1Fit, { x: newX1 + padX, y: yTopDraw, size: fontSize, font: helv, color: rgb(0, 0, 0) }); } catch { }
-      try { targetPage.drawText(line2Fit, { x: newX1 + padX, y: Math.max(0, yTopDraw - lh), size: fontSize, font: helv, color: rgb(0, 0, 0) }); } catch { }
-    } catch { }
-
-  } catch { }
-
-  return await pdfDoc2.save({ useObjectStreams: false });
+    const yTopDraw = Math.max(0, newY1 + (newY2-newY1) - padY - fontSize);
+    targetPage.drawRectangle({ x:newX1, y:newY1, width: Math.max(1,w), height: Math.max(1,h), color: rgb(1,1,1), opacity: 1, borderOpacity: 0 });
+    targetPage.drawText(line1Fit, { x:newX1+padX, y:yTopDraw, size:fontSize, font:helv, color: rgb(0,0,0) });
+    targetPage.drawText(line2Fit, { x:newX1+padX, y: Math.max(0, yTopDraw - lh), size:fontSize, font:helv, color: rgb(0,0,0) });
+  } catch (stampErr) {
+    console.warn('[buildPlaceholder] Stamp drawing failed:', stampErr.message);
+  }
+  
+  // Save stamped PDF
+  const stampedBytes = await pdfDoc2.save({ useObjectStreams: false });
+  
+  // Now create signature placeholder using plainAddPlaceholder on the stamped bytes
+  // This ensures a clean, properly structured signature field that SignPdf can work with
+  const finalRect = [newX1, newY1, newX2, newY2];
+  const pdfWithPlaceholder = plainAddPlaceholder({
+    pdfBuffer: Buffer.from(stampedBytes),
+    reason: String(reason || ''),
+    name: String(userName || ''),
+    signatureLength: 32768,
+    widgetRect: finalRect,
+  });
+  
+  return pdfWithPlaceholder;
 }
 
 // Unified signing flow used by /sign/pdf, /sign/pdf-resign, and /sign/pdf-batch
@@ -1428,9 +1219,9 @@ async function signWithUnifiedFlow(inputBuf, body, dll, pin) {
   const reason = (body && body.reason) || 'Signed via DSC Agent';
   const includeESS = body && body.includeESS !== undefined ? !!body.includeESS : true;
   const embedIntermediates = body && body.embedIntermediates !== undefined ? !!body.embedIntermediates : false;
-  const signingTime = parseLocalTime(body && body.signingTime);
+  const signingTime = requireSigningTime(body && body.signingTime);
   const stampAllPages = !!(body && body.stampAllPages === true);
-  let rectOverride = (body && Array.isArray(body.rect) && (body.rect.length === 4 || body.rect.length === 2)) ? body.rect.map((n) => parseInt(n, 10)) : null;
+  let rectOverride = (body && Array.isArray(body.rect) && (body.rect.length === 4 || body.rect.length === 2)) ? body.rect.map((n) => parseInt(n,10)) : null;
   let rectMode = (body && typeof body.rectMode === 'string') ? String(body.rectMode).toLowerCase() : 'pdf';
   // Support x,y (or left,top) when rect is not provided
   try {
@@ -1444,7 +1235,7 @@ async function signWithUnifiedFlow(inputBuf, body, dll, pin) {
         rectMode = 'top-left';
       }
     }
-  } catch { }
+  } catch {}
   const anchor = (body && typeof body.anchor === 'string') ? String(body.anchor).toLowerCase() : 'top-left';
   const requestedPageIndex = normalizeRequestedPageIndex(body && body.page);
 
@@ -1473,7 +1264,7 @@ async function signWithUnifiedFlow(inputBuf, body, dll, pin) {
 // ------- LTV (OCSP) scaffold -------
 function findIssuerCert(signerCert, candidates) {
   if (!Array.isArray(candidates)) return null;
-  for (const c of candidates) { try { if (signerCert.issuer.isEqual(c.subject)) return c; } catch { } }
+  for (const c of candidates) { try { if (signerCert.issuer.isEqual(c.subject)) return c; } catch {} }
   return null;
 }
 
@@ -1487,18 +1278,16 @@ function buildOcspRequestDER(signerCert, issuerCert) {
     const issuerKeyHash = sha1(spkBits);
     const serialHex = Buffer.from(signerCert.serialNumber.valueBlock.valueHex);
 
-    const certID = new asn1js.Sequence({
-      value: [
-        new asn1js.Sequence({ value: [new asn1js.ObjectIdentifier({ value: OID.sha1 }), new asn1js.Null()] }),
-        new asn1js.OctetString({ valueHex: ab(issuerNameHash) }),
-        new asn1js.OctetString({ valueHex: ab(issuerKeyHash) }),
-        new asn1js.Integer({ valueHex: ab(serialHex) }),
-      ]
-    });
-    const request = new asn1js.Sequence({ value: [certID] });
-    const requestList = new asn1js.Sequence({ value: [request] });
-    const tbs = new asn1js.Sequence({ value: [requestList] });
-    const ocspReq = new asn1js.Sequence({ value: [tbs] });
+    const certID = new asn1js.Sequence({ value: [
+      new asn1js.Sequence({ value: [ new asn1js.ObjectIdentifier({ value: OID.sha1 }), new asn1js.Null() ] }),
+      new asn1js.OctetString({ valueHex: ab(issuerNameHash) }),
+      new asn1js.OctetString({ valueHex: ab(issuerKeyHash) }),
+      new asn1js.Integer({ valueHex: ab(serialHex) }),
+    ]});
+    const request = new asn1js.Sequence({ value: [ certID ] });
+    const requestList = new asn1js.Sequence({ value: [ request ] });
+    const tbs = new asn1js.Sequence({ value: [ requestList ] });
+    const ocspReq = new asn1js.Sequence({ value: [ tbs ] });
     return Buffer.from(ocspReq.toBER(false));
   } catch { return null; }
 }
@@ -1509,7 +1298,7 @@ async function httpPostRaw(url, body, contentType) {
     try {
       const u = new URL(url);
       const req = mod.request({
-        method: 'POST', hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + (u.search || ''),
+        method: 'POST', hostname: u.hostname, port: u.port || (u.protocol==='https:'?443:80), path: u.pathname + (u.search||''),
         headers: { 'Content-Type': contentType, 'Accept': 'application/ocsp-response', 'Content-Length': body.length }
       }, (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
@@ -1561,9 +1350,9 @@ function getCRLUrlsFromCert(cert) {
             if (uri) out.push(uri);
           }
         }
-      } catch { }
+      } catch {}
     }
-  } catch { }
+  } catch {}
   return out;
 }
 
@@ -1581,7 +1370,7 @@ async function buildRevocationInfoUnsignedAttr(signerCert, intermediates) {
       const reqDer = buildOcspRequestDER(signerCert, issuer);
       if (reqDer) {
         for (const url of ocsp) {
-          try { ocspResp = await httpPostRaw(url, reqDer, 'application/ocsp-request'); if (ocspResp && ocspResp.length) break; } catch { }
+          try { ocspResp = await httpPostRaw(url, reqDer, 'application/ocsp-request'); if (ocspResp && ocspResp.length) break; } catch {}
         }
       }
     }
@@ -1589,7 +1378,7 @@ async function buildRevocationInfoUnsignedAttr(signerCert, intermediates) {
     // CRL
     const crlBlobs = [];
     for (const url of crls) {
-      try { const buf = await httpGetRawLTV(url); if (buf && buf.length) crlBlobs.push(buf); } catch { }
+      try { const buf = await httpGetRawLTV(url); if (buf && buf.length) crlBlobs.push(buf); } catch {}
     }
 
     if (!ocspResp && crlBlobs.length === 0) return null;
@@ -1597,16 +1386,16 @@ async function buildRevocationInfoUnsignedAttr(signerCert, intermediates) {
     const values = [];
     if (crlBlobs.length) {
       const crlSeq = new asn1js.Sequence({ value: crlBlobs.map((b) => new asn1js.OctetString({ valueHex: ab(b) })) });
-      const crlTagged = new asn1js.Constructed({ idBlock: { tagClass: 3, tagNumber: 0, isConstructed: true }, value: [crlSeq] });
+      const crlTagged = new asn1js.Constructed({ idBlock: { tagClass: 3, tagNumber: 0, isConstructed: true }, value: [ crlSeq ] });
       values.push(crlTagged);
     }
     if (ocspResp) {
-      const ocspSeq = new asn1js.Sequence({ value: [new asn1js.OctetString({ valueHex: ab(ocspResp) })] });
-      const ocspTagged = new asn1js.Constructed({ idBlock: { tagClass: 3, tagNumber: 1, isConstructed: true }, value: [ocspSeq] });
+      const ocspSeq = new asn1js.Sequence({ value: [ new asn1js.OctetString({ valueHex: ab(ocspResp) }) ] });
+      const ocspTagged = new asn1js.Constructed({ idBlock: { tagClass: 3, tagNumber: 1, isConstructed: true }, value: [ ocspSeq ] });
       values.push(ocspTagged);
     }
     const top = new asn1js.Sequence({ value: values });
-    return new pkijs.Attribute({ type: OID.adbeRevInfoArchival, values: [top] });
+    return new pkijs.Attribute({ type: OID.adbeRevInfoArchival, values: [ top ] });
   } catch { return null; }
 }
 
@@ -1649,7 +1438,7 @@ async function buildEtsiRevocationValuesUnsignedAttr(signerCert, intermediates) 
             const resp = await httpPostRaw(url, reqDer, 'application/ocsp-request');
             const basic = extractBasicOcspResponse(resp);
             if (basic) { basicRespAsn1 = basic; break; }
-          } catch { }
+          } catch {}
         }
       }
     }
@@ -1666,22 +1455,22 @@ async function buildEtsiRevocationValuesUnsignedAttr(signerCert, intermediates) 
         }
         const asn = asn1js.fromBER(ab(buf));
         if (asn.result) crlSeqValues.push(asn.result);
-      } catch { }
+      } catch {}
     }
 
     if (!basicRespAsn1 && crlSeqValues.length === 0) return null;
 
     const values = [];
     if (crlSeqValues.length) {
-      const crlVals = new asn1js.Constructed({ idBlock: { tagClass: 3, tagNumber: 0, isConstructed: true }, value: [new asn1js.Sequence({ value: crlSeqValues })] });
+      const crlVals = new asn1js.Constructed({ idBlock: { tagClass: 3, tagNumber: 0, isConstructed: true }, value: [ new asn1js.Sequence({ value: crlSeqValues }) ] });
       values.push(crlVals);
     }
     if (basicRespAsn1) {
-      const ocspVals = new asn1js.Constructed({ idBlock: { tagClass: 3, tagNumber: 1, isConstructed: true }, value: [new asn1js.Sequence({ value: [basicRespAsn1] })] });
+      const ocspVals = new asn1js.Constructed({ idBlock: { tagClass: 3, tagNumber: 1, isConstructed: true }, value: [ new asn1js.Sequence({ value: [ basicRespAsn1 ] }) ] });
       values.push(ocspVals);
     }
     const revVals = new asn1js.Sequence({ value: values });
-    return new pkijs.Attribute({ type: '1.2.840.113549.1.9.16.2.24', values: [revVals] });
+    return new pkijs.Attribute({ type: '1.2.840.113549.1.9.16.2.24', values: [ revVals ] });
   } catch { return null; }
 }
 
@@ -1691,7 +1480,6 @@ app.use(express.json({ limit: `${MAX_BODY_MB}mb` }));
 app.use(cors);
 
 let picked = null;
-
 function resolveByUserSelection() {
   if (USER_SELECTED_DLL) {
     try { return pkcs11lib.pickModule(USER_SELECTED_DLL); } catch (e) { throw e; }
@@ -1703,8 +1491,6 @@ function resolveByUserSelection() {
   }
   return null;
 }
-
-
 async function computeDynamicRect(pdfDoc, page, line1, line2, fontSize = 10, lh = 14, padX = 6, padY = 6, anchor = 'top-left', baseRect = [36, 36]) {
   const helv = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fitText = (t, maxW) => { let s = String(t); while (helv.widthOfTextAtSize(s, fontSize) > maxW && s.length > 1) s = s.slice(0, -1); return s; };
@@ -1725,42 +1511,16 @@ async function computeDynamicRect(pdfDoc, page, line1, line2, fontSize = 10, lh 
 function ensureDllPicked() {
   if (!picked) {
     let sel = null;
-    try { sel = resolveByUserSelection(); } catch { }
+    try { sel = resolveByUserSelection(); } catch {}
     picked = sel || pickModule();
   }
   return picked;
 }
 
-// app.get('/health', (req, res) => {
-//   try { const { dll, slotPresent } = ensureDllPicked(); res.json({ ok:true, version: VERSION, dll, slotPresent, requirePinPerSign: REQUIRE_PIN_PER_SIGN, promptAvailable: !!PIN_PROMPT_URL }); }
-//   catch(e){ res.status(500).json({ ok:false, message: e.message }); }
-// });
-
-
-
-// removed caching of slotPresent to reflect real-time token presence 
 app.get('/health', (req, res) => {
-  try {
-    // Keep DLL selection cached
-    const selected = ensureDllPicked();
-    console.log('Health check using DLL:', selected.dll);
-    // Re-detect slotPresent fresh each call (lightweight, ~10-50ms)
-    let slotPresent = false;
-    try {
-      pkcs11lib.withSession(selected.dll, '', (p11, session) => {
-        slotPresent = true;
-        return true;
-      });
-    } catch (e) {
-      slotPresent = false;
-    }
-
-    res.json({ ok: true, version: VERSION, dll: selected.dll, slotPresent, requirePinPerSign: REQUIRE_PIN_PER_SIGN, promptAvailable: !!PIN_PROMPT_URL });
-  }
-  catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  try { const { dll, slotPresent } = ensureDllPicked(); res.json({ ok:true, version: VERSION, dll, slotPresent, requirePinPerSign: REQUIRE_PIN_PER_SIGN, promptAvailable: !!PIN_PROMPT_URL }); }
+  catch(e){ res.status(500).json({ ok:false, message: e.message }); }
 });
-
-
 
 // List known tokens and current selection
 app.get('/tokens', requireAuth, (req, res) => {
@@ -1773,7 +1533,7 @@ app.get('/tokens', requireAuth, (req, res) => {
     }));
     res.json({ ok: true, selected: { tokenName: USER_SELECTED_TOKEN, dll: USER_SELECTED_DLL }, tokens });
   } catch (e) {
-    res.status(500).json({ ok: false, message: e.message });
+    res.status(500).json({ ok:false, message: e.message });
   }
 });
 
@@ -1787,23 +1547,23 @@ app.post('/token/select', requireAuth, (req, res) => {
     const dllIn = typeof body.dll === 'string' ? body.dll : '';
     let selected = null;
     if (dllIn) {
-      if (!fs.existsSync(dllIn)) return res.status(400).json({ ok: false, message: 'DLL not found' });
+      if (!fs.existsSync(dllIn)) return res.status(400).json({ ok:false, message: 'DLL not found' });
       selected = pkcs11lib.pickModule(dllIn);
       USER_SELECTED_DLL = selected.dll;
       USER_SELECTED_TOKEN = '';
     } else if (tname) {
       const candidates = pkcs11lib.getKnownTokenCandidates(tname);
-      if (!candidates.length) return res.status(400).json({ ok: false, message: 'Unknown tokenName' });
+      if (!candidates.length) return res.status(400).json({ ok:false, message: 'Unknown tokenName' });
       selected = pkcs11lib.pickFromCandidates(candidates);
       USER_SELECTED_DLL = selected.dll;
       USER_SELECTED_TOKEN = tname;
     } else {
-      return res.status(400).json({ ok: false, message: 'Provide tokenName or dll' });
+      return res.status(400).json({ ok:false, message: 'Provide tokenName or dll' });
     }
     picked = selected; // reset/replace cached pick
-    res.json({ ok: true, dll: selected.dll, slotPresent: !!selected.slotPresent, tokenName: USER_SELECTED_TOKEN });
+    res.json({ ok:true, dll: selected.dll, slotPresent: !!selected.slotPresent, tokenName: USER_SELECTED_TOKEN });
   } catch (e) {
-    res.status(500).json({ ok: false, message: e.message });
+    res.status(500).json({ ok:false, message: e.message });
   }
 });
 
@@ -1812,7 +1572,7 @@ app.post('/token/clear', requireAuth, (req, res) => {
   USER_SELECTED_DLL = '';
   USER_SELECTED_TOKEN = '';
   picked = null;
-  res.json({ ok: true });
+  res.json({ ok:true });
 });
 
 app.get('/certs', requireAuth, (req, res) => {
@@ -1820,9 +1580,8 @@ app.get('/certs', requireAuth, (req, res) => {
     const { dll } = ensureDllPicked();
     const pin = DSC_PIN_ENV || '';
     const pairs = pkcs11lib.listPairs(dll, pin);
-    console.log('Listed cert/key pairs from DLL:', dll, 'Count:', pairs.length);
-    res.json({ ok: true, pairs });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+    res.json({ ok:true, pairs });
+  } catch(e) { res.status(500).json({ ok:false, message: e.message }); }
 });
 
 // ...existing code...
@@ -1857,7 +1616,7 @@ app.post('/token/details', requireAuth, async (req, res) => {
       // Use the same slot/session as detectSigningKey
       const slot = p11.C_GetSlotList(true)[0];
       s = p11.C_OpenSession(slot, PKCS11.CKF_SERIAL_SESSION | PKCS11.CKF_RW_SESSION);
-      try { p11.C_Login(s, 1, pin); } catch (e) { try { p11.C_Logout(s); } catch { }; throw e; }
+      try { p11.C_Login(s, 1, pin); } catch(e) { try { p11.C_Logout(s);} catch{}; throw e; }
       // Token info
       const slotInfo = p11.C_GetTokenInfo(slot);
       info = {
@@ -1886,12 +1645,12 @@ app.post('/token/details', requireAuth, async (req, res) => {
             validTo: xc.validTo,
             subject,
           };
-        } catch { }
+        } catch {}
       }
     } finally {
-      try { if (s) p11.C_Logout(s); } catch { }
-      try { if (s) p11.C_CloseSession(s); } catch { }
-      try { p11.C_Finalize(); } catch { }
+      try { if (s) p11.C_Logout(s); } catch {}
+      try { if (s) p11.C_CloseSession(s); } catch {}
+      try { p11.C_Finalize(); } catch {}
     }
     res.json({
       ok: true,
@@ -1908,11 +1667,10 @@ app.post('/token/details', requireAuth, async (req, res) => {
 });
 
 
+
 // Text signing endpoint � unified PIN/session logic
 app.post('/sign/text', requireAuth, async (req, res) => {
   try {
-    const signingTime2 = new Date();
-
     const { dll } = ensureDllPicked();
     // Ensure DSC token is present before proceeding
     try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
@@ -1943,7 +1701,7 @@ app.post('/sign/text', requireAuth, async (req, res) => {
     try {
       const slot = p11.C_GetSlotList(true)[0];
       s = p11.C_OpenSession(slot, PKCS11.CKF_SERIAL_SESSION | PKCS11.CKF_RW_SESSION);
-      try { p11.C_Login(s, 1, pin); } catch (e) { try { p11.C_Logout(s); } catch { }; throw e; }
+      try { p11.C_Login(s, 1, pin); } catch(e) { try { p11.C_Logout(s);} catch{}; throw e; }
       // Find private key by idHex
       const privs = pkcs11lib.listObjects(p11, s, [{ type: PKCS11.CKA_CLASS, value: PKCS11.CKO_PRIVATE_KEY }], 20)
         .map(h => ({ handle: h, id: pkcs11lib.getAttr(p11, s, h, PKCS11.CKA_ID) }))
@@ -1954,32 +1712,21 @@ app.post('/sign/text', requireAuth, async (req, res) => {
       p11.C_SignInit(s, { mechanism: PKCS11.CKM_SHA256_RSA_PKCS }, privHandle);
       let sig;
       try { sig = p11.C_Sign(s, Buffer.from(text, 'utf8')); }
-      catch { const out = Buffer.alloc(4096); const r = p11.C_Sign(s, Buffer.from(text, 'utf8'), out); sig = Buffer.isBuffer(r) ? r : out.subarray(0, r); }
+      catch { const out = Buffer.alloc(4096); const r = p11.C_Sign(s, Buffer.from(text, 'utf8'), out); sig = Buffer.isBuffer(r)?r:out.subarray(0,r); }
       signature = sig;
     } finally {
-      try { if (s) p11.C_Logout(s); } catch { }
-      try { if (s) p11.C_CloseSession(s); } catch { }
-      try { p11.C_Finalize(); } catch { }
+      try { if (s) p11.C_Logout(s); } catch {}
+      try { if (s) p11.C_CloseSession(s); } catch {}
+      try { p11.C_Finalize(); } catch {}
     }
-    res.json({
-      ok: true,
-      signature: signature.toString('base64'),
-      signingTime: signingTime2 ? new Date(signingTime2).toISOString() : null,
-    });
+    res.json({ ok: true, signature: signature.toString('base64') });
   } catch (e) {
     console.error('[sign/text] failed:', e);
     return respondSigningError(res, e);
   }
 });
-
-
 app.post('/sign/pdf', requireAuth, async (req, res) => {
-  let authorizationContext = null;
-  let remoteApiKey = '';
-  let localSignCompleted = false;
   try {
-    const signRequestId = 'sign-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
-
     const { dll } = ensureDllPicked();
     // Ensure DSC token is present before proceeding
     try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
@@ -1987,7 +1734,6 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
     if (!pin && SESSION_PIN) pin = SESSION_PIN;
     let requirePin = (req.body && req.body.requirePin === true) || REQUIRE_PIN_PER_SIGN;
     if (SESSION_PIN && !(req.body && req.body.requirePin === true)) requirePin = false;
-
     if (requirePin) {
       try {
         pin = await promptPinEnsuringToken(dll, 'Enter token PIN to sign', 'DSC token not detected. Please insert your DSC token before entering the PIN to sign.');
@@ -1996,21 +1742,21 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
         return res.status(400).json({ ok: false, message: e.message || 'PIN required' });
       }
     }
-
     if (req.body && req.body.rememberSessionPin === false) SESSION_PIN = '';
     const b64 = req.body && req.body.pdfBase64;
     if (!b64) return res.status(400).json({ ok:false, message: 'pdfBase64 missing' });
     const reason = (req.body && req.body.reason) || 'Signed via DSC Agent';
     const includeESS = req.body && req.body.includeESS !== undefined ? !!req.body.includeESS : true;
     const embedIntermediates = req.body && req.body.embedIntermediates !== undefined ? !!req.body.embedIntermediates : false;
+    const signingTime = requireSigningTime(req.body && req.body.signingTime);
     const stampAllPages = !!(req.body && req.body.stampAllPages === true);
     const rectOverride = (req.body && Array.isArray(req.body.rect) && (req.body.rect.length === 4 || req.body.rect.length === 2))
       ? req.body.rect.map((n) => parseInt(n, 10))
       : null;
     const anchor = (req.body && typeof req.body.anchor === 'string') ? String(req.body.anchor).toLowerCase() : 'top-left';
-    const pageReq = req.body && req.body.page;
-    // Always use 'last' if no page is specified, to default to last page
-    const requestedPageIndex = (pageReq === undefined || pageReq === null || pageReq === '' || pageReq === 'last') ? 'last' : normalizeRequestedPageIndex(pageReq);
+  const pageReq = req.body && req.body.page;
+  // Always use 'last' if no page is specified, to default to last page
+  const requestedPageIndex = (pageReq === undefined || pageReq === null || pageReq === '' || pageReq === 'last') ? 'last' : normalizeRequestedPageIndex(pageReq);
 
     const inputBuf = Buffer.from(b64, 'base64');
     assertNoExistingSignature(inputBuf);
@@ -2019,39 +1765,15 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
     const { idHex, certDER } = detectSigningKey(dll, pin);
     const asn = asn1js.fromBER(ab(certDER));
     const signerCert = new pkijs.Certificate({ schema: asn.result });
-    const tsBody = buildTimeServerUserBody({ ...(req.body || {}), pin });
-    remoteApiKey = resolveRemoteApiKey(req, tsBody);
-    try {
-      const authPayload = buildCreateAuthorizationPayload({
-        requestId: signRequestId,
-        sourceBuffer: inputBuf,
-        signerIdentity: {
-          name: tsBody.name || signerCert.subject.typesAndValues.find(tv => tv.type === '2.5.4.3')?.value.valueBlock.value || 'Unknown',
-          machineHash: tsBody.machineHash,
-        },
-      });
-      
-      authorizationContext = await createSigningAuthorization({
-        apiKey: remoteApiKey,
-        payload: authPayload,
-      }, { timeServerClient, parseLocalTime });
-    } catch (authErr) {
-      const mapped = extractRemoteAuthError(authErr, 'Signing authorization failed.');
-      return res.status(mapped.status).json({ ok: false, message: mapped.message, reason: mapped.reason });
-    }
 
     const intermediates = await fetchIntermediatesIfRequested(signerCert, embedIntermediates);
     const userName = signerCert.subject.typesAndValues.find(tv => tv.type === '2.5.4.3')?.value.valueBlock.value || 'Unknown';
-    const signingTime2 = authorizationContext.signingTime;
-    const signingTime = signingTime2;
-    console.log('Signing time:', signingTime);
 
     // Compose the signature text for dynamic sizing
     const pad = (n) => String(n).padStart(2, '0');
-    // const dt = signingTime2 || new Date();
-     const dt = signingTime2;
-    console.log('Using signing time:', dt);
-    const tsText = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+    const dt = signingTime|| new Date();
+    console.log('Signing time:', dt);
+    const tsText = `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
     const line1 = `Digitally signed by ${userName}`;
     const line2 = `Date: ${tsText}`;
     const fontSize = 10, lh = 14, padX = 6, padY = 6;
@@ -2112,7 +1834,7 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
         targetIndex = Math.min(pageCount - 1, requestedPageIndex - 1);
       }
       // Find the widget annotation
-      const acroForm = pdfDoc.catalog.lookup(PDFName.of('AcroForm'));  
+      const acroForm = pdfDoc.catalog.lookup(PDFName.of('AcroForm'));
       const fields = acroForm.lookup(PDFName.of('Fields'));
       const fieldRef = fields.get(fields.size() - 1);
       const field = pdfDoc.context.lookup(fieldRef);
@@ -2122,7 +1844,7 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
         const kids = field.lookup(PDFName.of('Kids'));
         widgetRef = kids && (kids.get ? kids.get(0) : (kids.array ? kids.array[0] : null));
         if (widgetRef) widget = pdfDoc.context.lookup(widgetRef);
-      } catch { }
+      } catch {}
       if (!widget) { widgetRef = fieldRef; widget = field; }
 
       // Remove widget from all pages
@@ -2151,56 +1873,50 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
 
     const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
     const signedPdf = await new SignPdf().sign(prepared, signer);
-    localSignCompleted = true;
-
+    
+    // Debug: Verify signature was written
     try {
-      const completionPayload = buildCompletionPayload({
-        authorizationToken: authorizationContext.authorizationToken,
-        status: 'completed',
-        sourceBuffer: inputBuf,
-        signedBuffer: signedPdf,
-        signerIdentity: {
-          name: tsBody.name || userName,
-          machineHash: tsBody.machineHash,
-        },
-        signingTime: signingTime2,
-        signedAt: new Date(),
-      });
-      await completeSigningAuthorization({
-        apiKey: remoteApiKey,
-        authorizationId: authorizationContext.authorizationId,
-        payload: completionPayload,
-      }, { timeServerClient });
-    } catch (completionErr) {
-      const mapped = extractRemoteAuthError(completionErr, 'Signing completed locally, but authorization completion failed.');
-      return res.status(mapped.status).json({
-        ok: false,
-        message: mapped.message,
-        reason: mapped.reason,
-        authorizationId: authorizationContext.authorizationId,
-      });
+      const debugDoc = await PDFDocument.load(signedPdf);
+      const debugAcro = debugDoc.catalog.lookup(PDFName.of('AcroForm'));
+      if (debugAcro) {
+        const debugFields = debugAcro.lookup(PDFName.of('Fields'));
+        const debugCount = debugFields.size ? debugFields.size() : (debugFields.array ? debugFields.array.length : 0);
+        console.log('[DEBUG] Signed PDF has', debugCount, 'signature field(s)');
+        for (let i = 0; i < debugCount; i++) {
+          const debugRef = debugFields.get(i);
+          const debugField = debugDoc.context.lookup(debugRef);
+          const debugV = debugField.lookupMaybe ? debugField.lookupMaybe(PDFName.of('V')) : null;
+          if (debugV) {
+            const debugContents = debugV.lookupMaybe ? debugV.lookupMaybe(PDFName.of('Contents')) : null;
+            if (debugContents && debugContents.asString) {
+              const debugStr = debugContents.asString();
+              console.log(`[DEBUG] Field ${i} /Contents length:`, debugStr.length, 'bytes');
+              if (debugStr.length === 0) console.warn('[WARN] Signature /Contents is EMPTY!');
+            } else {
+              console.warn(`[WARN] Field ${i} has /V but no /Contents!`);
+            }
+          } else {
+            console.warn(`[WARN] Field ${i} has no /V (unsigned)!`);
+          }
+        }
+      }
+    } catch (dbgErr) {
+      console.warn('[DEBUG] Could not inspect signed PDF:', dbgErr.message);
     }
-
-    res.json({ ok: true, signedPdfBase64: signedPdf.toString('base64') });
+    
+    res.json({ ok:true, signedPdfBase64: signedPdf.toString('base64') });
   } catch (e) {
-    if (authorizationContext && !localSignCompleted) {
-      await completeAuthorizationFailureSafe(remoteApiKey, authorizationContext, e && e.message ? String(e.message) : 'Signing failed');
-    }
     console.error('[sign/pdf] failed:', e);
     return respondSigningError(res, e);
   }
 });
-
-
 app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
   try {
-    const signRequestId = 'sign-batch-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
-
     const { dll } = ensureDllPicked();
     // Ensure DSC token is present before proceeding
     try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
     const arr = req.body && Array.isArray(req.body.pdfs) ? req.body.pdfs : null;
-    if (!arr || !arr.length) return res.status(400).json({ ok: false, message: 'pdfs[] missing' });
+    if (!arr || !arr.length) return res.status(400).json({ ok:false, message: 'pdfs[] missing' });
 
     let pin = (req.body && req.body.pin) || DSC_PIN_ENV || '';
     if (!pin && SESSION_PIN) pin = SESSION_PIN;
@@ -2225,6 +1941,7 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
     const reason = (req.body && req.body.reason) || 'Signed via DSC Agent';
     const includeESS = req.body && req.body.includeESS !== undefined ? !!req.body.includeESS : true;
     const embedIntermediates = req.body && req.body.embedIntermediates !== undefined ? !!req.body.embedIntermediates : false;
+    const signingTime = requireSigningTime(req.body && req.body.signingTime);
     let rectOverride = null;
     if (req.body && Array.isArray(req.body.rect)) {
       rectOverride = req.body.rect.map((n) => Number(n));
@@ -2254,35 +1971,20 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
     const signerCert = new pkijs.Certificate({ schema: asn.result });
     const intermediates = await fetchIntermediatesIfRequested(signerCert, embedIntermediates);
     const userName = signerCert.subject.typesAndValues.find(tv => tv.type === '2.5.4.3')?.value.valueBlock.value || 'Unknown';
-    const tsBody = buildTimeServerUserBody({ ...(req.body || {}), pin });
-    const remoteApiKey = resolveRemoteApiKey(req, tsBody);
-    const signerIdentity = {
-      name: tsBody.name || userName,
-      machineHash: tsBody.machineHash,
-    };
 
-    async function signOne(b64, index) {
-      let authorizationContext = null;
-      let localSignCompleted = false;
+    const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
+
+    async function signOne(b64) {
       try {
         const inputBuf = Buffer.from(b64, 'base64');
         assertNoExistingSignature(inputBuf);
-        authorizationContext = await createSigningAuthorization({
-          apiKey: remoteApiKey,
-          payload: buildCreateAuthorizationPayload({
-            requestId: `${signRequestId}-${index + 1}`,
-            sourceBuffer: inputBuf,
-            signerIdentity,
-          }),
-        }, { timeServerClient, parseLocalTime });
-        const signingTime = authorizationContext.signingTime;
 
         let pdfForPlaceholder = inputBuf;
         try {
           const pdfDoc = await PDFDocument.load(inputBuf);
           pdfDoc.catalog.set(PDFName.of('NeedAppearances'), pdfDoc.context.obj(true));
           pdfForPlaceholder = await pdfDoc.save({ useObjectStreams: false });
-        } catch { }
+        } catch {}
 
         // Compute final widget rect (respect top-left mode with [left, top])
         let widgetRect = rectOverride || SIGN_RECT;
@@ -2301,10 +2003,10 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
               const defaultW = Math.max(1, SIGN_RECT[2] - SIGN_RECT[0]);
               const defaultH = Math.max(1, SIGN_RECT[3] - SIGN_RECT[1]);
               const defW = Math.max(1, Math.min(defaultW, Math.floor(szTL.width - Math.max(0, L))));
-              const defH = Math.max(1, Math.min(defaultH, Math.floor(szTL.height - Math.max(0, T))));
+              const defH = Math.max(1, Math.min(defaultH,  Math.floor(szTL.height - Math.max(0, T))));
               const x1 = Math.max(0, L);
               const y2 = Math.max(0, szTL.height - T);
-              const x2 = Math.min(szTL.width, x1 + defW);
+              const x2 = Math.min(szTL.width,  x1 + defW);
               const y1 = Math.max(0, y2 - defH);
               widgetRect = [x1, y1, x2, y2];
               rectOverride = widgetRect;
@@ -2313,9 +2015,9 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
               const [rx1, ry1, rx2, ry2] = rectOverride;
               widgetRect = [Math.min(rx1, rx2), Math.min(ry1, ry2), Math.max(rx1, rx2), Math.max(ry1, ry2)];
             }
-          } catch { }
+          } catch {}
 
-          pdflibAddPlaceholder({ pdfDoc: pdfDoc2, reason: String(reason || ''), contactInfo: '', location: '', name: String(userName || ''), signingTime, signatureLength: 32768, widgetRect });
+          pdflibAddPlaceholder({ pdfDoc: pdfDoc2, reason: String(reason||''), contactInfo: '', location: '', name: String(userName||''), signingTime, signatureLength: 32768, widgetRect });
           try {
             const context = pdfDoc2.context;
             const acroForm = pdfDoc2.catalog.lookup(PDFName.of('AcroForm'));
@@ -2338,8 +2040,8 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
 
             const helv = await pdfDoc2.embedFont(StandardFonts.Helvetica);
             const pad = (n) => String(n).padStart(2, '0');
-            const dt = signingTime || new Date();
-            const tsText = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+            const dt = requireSigningTime(signingTime);
+            const tsText = `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
             const line1 = `Digitally signed by ${userName}`;
             const line2 = `Date: ${tsText}`;
             const fontSize = 10;
@@ -2352,12 +2054,12 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
               if (s.length < String(t).length) s = s.slice(0, -1) + '?';
               return s;
             };
-            const maxTextW = Math.max(0, wMax - padX * 2);
+            const maxTextW = Math.max(0, wMax - padX*2);
             const line1Fit = fitText(line1, maxTextW);
             const line2Fit = fitText(line2, maxTextW);
             const contentW = Math.max(helv.widthOfTextAtSize(line1Fit, fontSize), helv.widthOfTextAtSize(line2Fit, fontSize));
-            const w = Math.min(wMax, Math.ceil(contentW) + padX * 2);
-            const h = Math.min(hMax, (2 * fontSize) + (lh - fontSize) + padY * 2);
+            const w = Math.min(wMax, Math.ceil(contentW) + padX*2);
+            const h = Math.min(hMax, (2*fontSize) + (lh - fontSize) + padY*2);
             let newX1 = x1, newY1 = y1, newX2 = x2, newY2 = y2;
             switch (anchor) {
               case 'top-right':
@@ -2381,7 +2083,7 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
               `(${esc(line2Fit)}) Tj`,
               'ET',
             ].join('\n');
-            const apStream = context.stream(content, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, w, h], Matrix: [1, 0, 0, 1, 0, 0], Resources: { Font: { F1: helv.ref } } });
+            const apStream = context.stream(content, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, w, h], Matrix: [1,0,0,1,0,0], Resources: { Font: { F1: helv.ref } } });
             widget.set(PDFName.of('AP'), context.obj({ N: context.register(apStream) }));
 
             try {
@@ -2399,46 +2101,24 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
                       const ref = annots.get ? annots.get(j) : (annots.array ? annots.array[j] : null);
                       if (ref && ref === lastFieldRef && annots.remove) annots.remove(j);
                     }
-                  } catch { }
+                  } catch {}
                 }
                 try {
                   let annots = targetPage.node.lookupMaybe ? targetPage.node.lookupMaybe(PDFName.of('Annots')) : null;
                   if (!annots) targetPage.node.set(PDFName.of('Annots'), context.obj([lastFieldRef]));
                   else if (annots.push) annots.push(lastFieldRef);
-                } catch { }
+                } catch {}
               }
-            } catch { }
-          } catch { }
+            } catch {}
+          } catch {}
           pdfWithPlaceholder = await pdfDoc2.save({ useObjectStreams: false });
         } catch (eLib) {
           pdfWithPlaceholder = plainAddPlaceholder({ pdfBuffer: Buffer.from(pdfForPlaceholder), reason, name: userName, signatureLength: 32768, widgetRect });
         }
 
-        const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
         const signedPdf = await new SignPdf().sign(pdfWithPlaceholder, signer);
-        localSignCompleted = true;
-        await completeSigningAuthorization({
-          apiKey: remoteApiKey,
-          authorizationId: authorizationContext.authorizationId,
-          payload: buildCompletionPayload({
-            authorizationToken: authorizationContext.authorizationToken,
-            status: 'completed',
-            sourceBuffer: inputBuf,
-            signedBuffer: signedPdf,
-            signerIdentity,
-            signingTime,
-            signedAt: new Date(),
-          }),
-        }, { timeServerClient });
         return { ok: true, signedPdfBase64: signedPdf.toString('base64') };
       } catch (e) {
-        if (authorizationContext && !localSignCompleted) {
-          await completeAuthorizationFailureSafe(remoteApiKey, authorizationContext, e && e.message ? String(e.message) : 'Signing failed');
-        }
-        if (e && typeof e.status === 'number') {
-          const mappedRemote = extractRemoteAuthError(e, 'Signing authorization failed.');
-          return { ok: false, message: mappedRemote.message, reason: mappedRemote.reason, authorizationId: authorizationContext && authorizationContext.authorizationId ? authorizationContext.authorizationId : undefined };
-        }
         const mapped = translatePkcs11Error(e);
         return { ok: false, message: mapped.message };
       }
@@ -2450,7 +2130,7 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
       // (Smartcards often dislike concurrent sessions across rapid calls.)
       // If we need concurrency later, we can gate via a queue.
       /* eslint-disable no-await-in-loop */
-      results.push(await signOne(b64, results.length));
+      results.push(await signOne(b64));
       /* eslint-enable no-await-in-loop */
     }
     return res.json({ ok: true, results });
@@ -2459,15 +2139,11 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
     return respondSigningError(res, e);
   }
 });
-// POST /sign/pdf-resign-flatten
+ // POST /sign/pdf-resign-flatten
 
 app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
-  let authorizationContext = null;
-  let remoteApiKey = '';
-  let localSignCompleted = false;
-  try {
-    const signRequestId = 'sign-resign-flatten-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
 
+  try {
     const { dll } = ensureDllPicked();
     // Ensure DSC token is present before proceeding
     try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
@@ -2494,11 +2170,12 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
     }
 
     const b64 = req.body && req.body.pdfBase64;
-    if (!b64) return res.status(400).json({ ok: false, message: 'pdfBase64 missing' });
+    if (!b64) return res.status(400).json({ ok:false, message: 'pdfBase64 missing' });
 
     const reason = (req.body && req.body.reason) || 'Signed via DSC Agent';
     const includeESS = req.body && req.body.includeESS !== undefined ? !!req.body.includeESS : true;
     const embedIntermediates = req.body && req.body.embedIntermediates !== undefined ? !!req.body.embedIntermediates : false;
+    const signingTime = requireSigningTime(req.body && req.body.signingTime);
     const useViewerAppearance = !!(req.body && req.body.useViewerAppearance === true);
     const stampPrevious = !!(req.body && req.body.stampPrevious === true);
     // Accept rect as [x1,y1,x2,y2] or top-left as [left, top]
@@ -2508,10 +2185,10 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
     let rectMode = (req.body && typeof req.body.rectMode === 'string') ? String(req.body.rectMode).toLowerCase() : 'top-left';
     const debugRect = !!(req.body && req.body.debugRect === true);
     const anchor = (req.body && typeof req.body.anchor === 'string') ? String(req.body.anchor).toLowerCase() : 'top-left';
-    const pageReq = req.body && req.body.page;
-    const requestedPageIndex = normalizeRequestedPageIndex(pageReq);
-    console.log('[pdf-resign-flatten] pageReq:', pageReq);
-    console.log('[pdf-resign-flatten] requestedPageIndex:', requestedPageIndex);
+  const pageReq = req.body && req.body.page;
+  const requestedPageIndex = normalizeRequestedPageIndex(pageReq);
+  console.log('[pdf-resign-flatten] pageReq:', pageReq);
+  console.log('[pdf-resign-flatten] requestedPageIndex:', requestedPageIndex);
 
     const inputBuf = Buffer.from(b64, 'base64');
 
@@ -2528,38 +2205,38 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
       const copied = await dstDoc.copyPages(srcDoc, indices);
       for (const p of copied) {
         // Ensure page has no Annots
-        try { p.node.set(PDFName.of('Annots'), dstDoc.context.obj([])); } catch { }
+        try { p.node.set(PDFName.of('Annots'), dstDoc.context.obj([])); } catch {}
         dstDoc.addPage(p);
       }
-      try { const perms = dstDoc.catalog.lookupMaybe ? dstDoc.catalog.lookupMaybe(PDFName.of('Perms')) : null; if (perms && perms.delete) perms.delete(PDFName.of('DocMDP')); } catch { }
-      try { if (dstDoc.catalog.delete) dstDoc.catalog.delete(PDFName.of('AcroForm')); } catch { }
+      try { const perms = dstDoc.catalog.lookupMaybe ? dstDoc.catalog.lookupMaybe(PDFName.of('Perms')) : null; if (perms && perms.delete) perms.delete(PDFName.of('DocMDP')); } catch {}
+      try { if (dstDoc.catalog.delete) dstDoc.catalog.delete(PDFName.of('AcroForm')); } catch {}
 
       // Redraw previous signer text (opt-in)
       if (stampPrevious && Array.isArray(prevBoxes) && prevBoxes.length) {
         const helv = await dstDoc.embedFont(StandardFonts.Helvetica);
-        if (dstDoc.getPageCount() === 1) {
-          const padX = 6, padY = 6; const fontSize = 10; const lh = 14;
-          const fit = (t, maxW) => { let s = String(t || ''); while (helv.widthOfTextAtSize(s, fontSize) > maxW && s.length > 1) s = s.slice(0, -1); return s; };
-          const fmt = (mstr) => { try { const m = /(?:D:)?(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?/.exec(mstr || ''); if (!m) return ''; const [, y, mo, d, h, mi, se = '00'] = m; return `${y}-${mo}-${d} ${h}:${mi}:${se}`; } catch { return ''; } };
-          for (const box of prevBoxes) {
-            const idx = Math.max(0, Math.min(dstDoc.getPageCount() - 1, box.pageIndex || 0));
-            //console.log('[pdf-resign-flatten] Stamping previous sig text on page', (idx+1), 'box:', box);
-            const page = dstDoc.getPage(idx);
-            const [x1, y1, x2, y2] = box.rect.map(n => Number(n) || 0);
-            const maxW = Math.max(0, (Math.max(0, x2 - x1) - padX * 2));
-            const nameLine = `Digitally signed by ${box.name || 'Unknown'}`;
-            const dateLine = box.when ? `Date: ${fmt(box.when)}` : '';
-            const line1Fit = fit(nameLine, maxW);
-            const line2Fit = fit(dateLine, maxW);
-            page.drawText(line1Fit, { x: x1 + padX, y: y1 + Math.max(0, (y2 - y1) - padY - fontSize), size: fontSize, font: helv });
-            if (line2Fit) page.drawText(line2Fit, { x: x1 + padX, y: y1 + Math.max(0, (y2 - y1) - padY - fontSize - lh), size: fontSize, font: helv });
-          }
+        if(dstDoc.getPageCount()===1){
+        const padX = 6, padY = 6; const fontSize = 10; const lh = 14;
+        const fit = (t, maxW) => { let s = String(t||''); while (helv.widthOfTextAtSize(s, fontSize) > maxW && s.length > 1) s = s.slice(0,-1); return s; };
+        const fmt = (mstr) => { try { const m = /(?:D:)?(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?/.exec(mstr || ''); if (!m) return ''; const [, y, mo, d, h, mi, se='00'] = m; return `${y}-${mo}-${d} ${h}:${mi}:${se}`; } catch { return ''; } };
+        for (const box of prevBoxes) {
+          const idx = Math.max(0, Math.min(dstDoc.getPageCount()-1, box.pageIndex || 0));
+          //console.log('[pdf-resign-flatten] Stamping previous sig text on page', (idx+1), 'box:', box);
+          const page = dstDoc.getPage(idx);
+          const [x1, y1, x2, y2] = box.rect.map(n => Number(n)||0);
+          const maxW = Math.max(0, (Math.max(0, x2 - x1) - padX*2));
+          const nameLine = `Digitally signed by ${box.name || 'Unknown'}`;
+          const dateLine = box.when ? `Date: ${fmt(box.when)}` : '';
+          const line1Fit = fit(nameLine, maxW);
+          const line2Fit = fit(dateLine, maxW);
+          page.drawText(line1Fit, { x: x1 + padX, y: y1 + Math.max(0, (y2 - y1) - padY - fontSize), size: fontSize, font: helv });
+          if (line2Fit) page.drawText(line2Fit, { x: x1 + padX, y: y1 + Math.max(0, (y2 - y1) - padY - fontSize - lh), size: fontSize, font: helv });
         }
+      }
       }
 
       flattenedBuf = await dstDoc.save({ useObjectStreams: false });
     } catch (e) {
-      return res.status(400).json({ ok: false, message: 'Flatten failed: ' + (e.message || String(e)) });
+      return res.status(400).json({ ok:false, message: 'Flatten failed: ' + (e.message || String(e)) });
     }
 
     // Prepare for placeholder
@@ -2569,12 +2246,12 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
     try {
       const pdfDoc = await safeLoadPdf(flattenedBuf);
       if (useViewerAppearance) {
-        try { pdfDoc.catalog.set(PDFName.of('NeedAppearances'), pdfDoc.context.obj(true)); } catch { }
+        try { pdfDoc.catalog.set(PDFName.of('NeedAppearances'), pdfDoc.context.obj(true)); } catch {}
       } else {
-        try { if (pdfDoc.catalog.delete) pdfDoc.catalog.delete(PDFName.of('NeedAppearances')); } catch { }
+        try { if (pdfDoc.catalog.delete) pdfDoc.catalog.delete(PDFName.of('NeedAppearances')); } catch {}
       }
       pdfForPlaceholder = await pdfDoc.save({ useObjectStreams: false });
-    } catch { }
+    } catch {}
 
     // Detect signer key + chain
     const { idHex, certDER } = detectSigningKey(dll, pin);
@@ -2582,26 +2259,6 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
     const signerCert = new pkijs.Certificate({ schema: asn.result });
     const intermediates = await fetchIntermediatesIfRequested(signerCert, embedIntermediates);
     const userName = signerCert.subject.typesAndValues.find(tv => tv.type === '2.5.4.3')?.value.valueBlock.value || 'Unknown';
-    const tsBody = buildTimeServerUserBody({ ...(req.body || {}), pin });
-    remoteApiKey = resolveRemoteApiKey(req, tsBody);
-    try {
-      authorizationContext = await createSigningAuthorization({
-        apiKey: remoteApiKey,
-        payload: buildCreateAuthorizationPayload({
-          requestId: signRequestId,
-          sourceBuffer: inputBuf,
-          signerIdentity: {
-            name: tsBody.name || userName,
-            machineHash: tsBody.machineHash,
-          },
-        }),
-      }, { timeServerClient, parseLocalTime });
-    } catch (authErr) {
-      const mapped = extractRemoteAuthError(authErr, 'Signing authorization failed.');
-      return res.status(mapped.status).json({ ok: false, message: mapped.message, reason: mapped.reason });
-    }
-    const signingTime2 = authorizationContext.signingTime;
-    const signingTime = signingTime2;
 
     // Compute rectangle relative to target page (like append path uses defaults)
     let placeholderRect = rectOverride || null;
@@ -2612,9 +2269,9 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
       const szTMP = tmpDoc.getPages()[targetIndexTMP].getSize();
       const helv = await tmpDoc.embedFont(StandardFonts.Helvetica);
       const fontSize = 10, lh = 14, padX = 6, padY = 6;
-      const dt = signingTime || new Date();
+      const dt = requireSigningTime(signingTime);
       const pad = (n) => String(n).padStart(2, '0');
-      const tsText = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+      const tsText = `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
       const line1 = `Digitally signed by ${userName}`;
       const line2 = `Date: ${tsText}`;
       const fitText = (t, maxW) => { let s = String(t); while (helv.widthOfTextAtSize(s, fontSize) > maxW && s.length > 1) s = s.slice(0, -1); return s; };
@@ -2622,12 +2279,12 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
       if (rectOverride && rectOverride.length >= 3) {
         maxW = Math.abs(rectOverride[2] - (rectOverride[0] || 0));
       }
-      const maxTextW = Math.max(0, maxW - padX * 2);
+      const maxTextW = Math.max(0, maxW - padX*2);
       const line1Fit = fitText(line1, maxTextW);
       const line2Fit = fitText(line2, maxTextW);
       const contentW = Math.max(helv.widthOfTextAtSize(line1Fit, fontSize), helv.widthOfTextAtSize(line2Fit, fontSize));
-      const w = Math.ceil(contentW) + padX * 2;
-      const h = (2 * fontSize) + (lh - fontSize) + padY * 2;
+      const w = Math.ceil(contentW) + padX*2;
+      const h = (2*fontSize) + (lh - fontSize) + padY*2;
       if (rectOverride && rectMode === 'top-left') {
         // Use supplied coordinates
         const arr = rectOverride.map(n => Number(n) || 0);
@@ -2639,7 +2296,7 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
       } else if (!rectOverride) {
         // No coordinates supplied: default to bottom right, but try to place left or above previous signatures
         let gap = 8;
-        let x2 = szTMP.width - 36;
+        let x2 = szTMP.width-36;
         let x1 = x2 - w;
         let y1 = 80;
         let y2 = y1 + h;
@@ -2648,7 +2305,7 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
         if (Array.isArray(prevBoxes)) {
           for (const b of prevBoxes) {
             // Accept both 0-based and 1-based pageIndex
-            let pageIdx = (b.pageIndex !== undefined) ? b.pageIndex : (b.page !== undefined ? b.page - 1 : 0);
+            let pageIdx = (b.pageIndex !== undefined) ? b.pageIndex : (b.page !== undefined ? b.page-1 : 0);
             if (pageIdx === targetIndexTMP) {
               prevRects.push(Array.isArray(b.rect) ? b.rect.map(Number) : []);
             }
@@ -2686,7 +2343,7 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
         // Fallback: use SIGN_RECT or default
         placeholderRect = clampRectToPage([szTMP.width - w - 36, 36, szTMP.width - 36, 36 + h], szTMP);
       }
-    } catch { }
+    } catch {}
 
     // Pre-stamp the visible text into page content before creating the placeholder,
     // so the stamp is present even if a viewer ignores the widget AP on first load.
@@ -2698,34 +2355,34 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
       const pageS = docStamp.getPages()[targetIndexS];
       const [x1s, y1s, x2s, y2s] = placeholderRect;
       const helvS = await docStamp.embedFont(StandardFonts.Helvetica);
-      const padS = (n) => String(n).padStart(2, '0');
-      const dtS = signingTime || new Date();
-      const tsTextS = `${dtS.getFullYear()}-${padS(dtS.getMonth() + 1)}-${padS(dtS.getDate())} ${padS(dtS.getHours())}:${padS(dtS.getMinutes())}:${padS(dtS.getSeconds())}`;
+      const padS = (n)=>String(n).padStart(2,'0');
+      const dtS = requireSigningTime(signingTime);
+      const tsTextS = `${dtS.getFullYear()}-${padS(dtS.getMonth()+1)}-${padS(dtS.getDate())} ${padS(dtS.getHours())}:${padS(dtS.getMinutes())}:${padS(dtS.getSeconds())}`;
       const line1S = `Digitally signed by ${userName}`;
       const line2S = `Date: ${tsTextS}`;
-      const fontSizeS = 10, lhS = 14; const padXS = 6, padYS = 6;
-      const fitTextS = (t, maxW) => { let s = String(t || ''); while (helvS.widthOfTextAtSize(s, fontSizeS) > maxW && s.length > 1) s = s.slice(0, -1); return s; };
-      const maxTextWS = Math.max(0, (Math.max(0, x2s - x1s) - padXS * 2));
-      const line1FitS = fitTextS(line1S, maxTextWS + 10);
-      const line2FitS = fitTextS(line2S, maxTextWS + 10);
+      const fontSizeS = 10, lhS = 14; const padXS=6, padYS=6;
+      const fitTextS=(t,maxW)=>{ let s=String(t||''); while(helvS.widthOfTextAtSize(s,fontSizeS)>maxW && s.length>1) s=s.slice(0,-1); return s; };
+      const maxTextWS = Math.max(0, (Math.max(0,x2s-x1s) - padXS*2));
+      const line1FitS = fitTextS(line1S, maxTextWS+10);
+      const line2FitS = fitTextS(line2S, maxTextWS+10);
       // Compute minimal background box to fit the two lines
       const contentW = Math.max(helvS.widthOfTextAtSize(line1FitS, fontSizeS), helvS.widthOfTextAtSize(line2FitS, fontSizeS));
-      const wBox = Math.min(Math.max(0, x2s - x1s), Math.ceil(contentW) + padXS * 2);
-      const hBox = Math.min(Math.max(0, y2s - y1s), (2 * fontSizeS) + (lhS - fontSizeS) + padYS * 2);
+      const wBox = Math.min(Math.max(0, x2s - x1s), Math.ceil(contentW) + padXS*2);
+      const hBox = Math.min(Math.max(0, y2s - y1s), (2*fontSizeS) + (lhS - fontSizeS) + padYS*2);
       // Anchor at left-bottom of the placeholder rect
       const bx1 = x1s;
       const by1 = y1s;
-      try { pageS.drawRectangle({ x: bx1, y: by1, width: Math.max(1, wBox), height: Math.max(1, hBox), color: rgb(1, 1, 1), opacity: 1, borderOpacity: 0 }); } catch { }
+      try { pageS.drawRectangle({ x: bx1, y: by1, width: Math.max(1,wBox), height: Math.max(1,hBox), color: rgb(1,1,1), opacity: 1, borderOpacity: 0 }); } catch {}
       try {
         const yTop = by1 + Math.max(0, hBox - padYS - fontSizeS);
-        pageS.drawText(line1FitS, { x: bx1 + padXS, y: yTop, size: fontSizeS, font: helvS, color: rgb(0, 0, 0) });
-        if (line2FitS) pageS.drawText(line2FitS, { x: bx1 + padXS, y: Math.max(0, yTop - lhS), size: fontSizeS, font: helvS, color: rgb(0, 0, 0) });
-      } catch { }
+        pageS.drawText(line1FitS, { x: bx1 + padXS, y: yTop, size: fontSizeS, font: helvS, color: rgb(0,0,0) });
+        if (line2FitS) pageS.drawText(line2FitS, { x: bx1 + padXS, y: Math.max(0, yTop - lhS), size: fontSizeS, font: helvS, color: rgb(0,0,0) });
+      } catch {}
       pdfForPlaceholder = await docStamp.save({ useObjectStreams: false });
-    } catch { }
+    } catch {}
 
     // Use plainAddPlaceholder, then inject AP/wiring
-    let pdfWithPlaceholder = plainAddPlaceholder({ pdfBuffer: Buffer.from(pdfForPlaceholder), reason: String(reason || ''), name: String(userName || ''), signingTime, signatureLength: 32768, widgetRect: placeholderRect });
+    let pdfWithPlaceholder = plainAddPlaceholder({ pdfBuffer: Buffer.from(pdfForPlaceholder), reason: String(reason||''), name: String(userName||''), signatureLength: 32768, widgetRect: placeholderRect });
     // Robustly move the widget annotation to the correct page, mirroring /sign/pdf logic
     try {
       const pdfDoc2 = await safeLoadPdf(pdfWithPlaceholder);
@@ -2743,7 +2400,7 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
         const kids = field.lookup(PDFName.of('Kids'));
         widgetRef = kids && (kids.get ? kids.get(0) : (kids.array ? kids.array[0] : null));
         if (widgetRef) widget = pdfDoc2.context.lookup(widgetRef);
-      } catch { }
+      } catch {}
       if (!widget) { widgetRef = fieldRef; widget = field; }
       // Remove widget from all pages
       for (let i = 0; i < pageCount2; ++i) {
@@ -2765,9 +2422,9 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
       arr.push(widgetRef);
       targetPage.node.set(PDFName.of('Annots'), pdfDoc2.context.obj(arr));
       // Set widget's /P property
-      try { widget.set(PDFName.of('P'), targetPage.ref); } catch { }
+      try { widget.set(PDFName.of('P'), targetPage.ref); } catch {}
       // Set widget rectangle
-      try { const [x1, y1, x2, y2] = placeholderRect; widget.set(PDFName.of('Rect'), pdfDoc2.context.obj([x1, y1, x2, y2])); } catch { }
+      try { const [x1, y1, x2, y2] = placeholderRect; widget.set(PDFName.of('Rect'), pdfDoc2.context.obj([x1, y1, x2, y2])); } catch {}
       // Align /AP normal appearance BBox
       try {
         const apDict = widget.lookupMaybe ? widget.lookupMaybe(PDFName.of('AP')) : null;
@@ -2776,10 +2433,10 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
           if (nAp && nAp.set) {
             const wAp = Math.max(0, placeholderRect[2] - placeholderRect[0]);
             const hAp = Math.max(0, placeholderRect[3] - placeholderRect[1]);
-            try { nAp.set(PDFName.of('BBox'), pdfDoc2.context.obj([0, 0, wAp, hAp])); } catch { }
+            try { nAp.set(PDFName.of('BBox'), pdfDoc2.context.obj([0, 0, wAp, hAp])); } catch {}
           }
         }
-      } catch { }
+      } catch {}
       pdfWithPlaceholder = await pdfDoc2.save({ useObjectStreams: false });
     } catch (moveErr) {
       console.warn('[pdf-resign-flatten] Failed to move widget annotation:', moveErr.message || moveErr);
@@ -2789,39 +2446,9 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
 
     const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
     const signedPdf = await new SignPdf().sign(pdfWithPlaceholder, signer);
-    localSignCompleted = true;
-    try {
-      await completeSigningAuthorization({
-        apiKey: remoteApiKey,
-        authorizationId: authorizationContext.authorizationId,
-        payload: buildCompletionPayload({
-          authorizationToken: authorizationContext.authorizationToken,
-          status: 'completed',
-          sourceBuffer: inputBuf,
-          signedBuffer: signedPdf,
-          signerIdentity: {
-            name: tsBody.name || userName,
-            machineHash: tsBody.machineHash,
-          },
-          signingTime,
-          signedAt: new Date(),
-        }),
-      }, { timeServerClient });
-    } catch (completionErr) {
-      const mapped = extractRemoteAuthError(completionErr, 'Signing completed locally, but authorization completion failed.');
-      return res.status(mapped.status).json({
-        ok: false,
-        message: mapped.message,
-        reason: mapped.reason,
-        authorizationId: authorizationContext.authorizationId,
-      });
-    }
     // Important: do not modify bytes post-sign; any change invalidates the signature
-    return res.json({ ok: true, signedPdfBase64: signedPdf.toString('base64') });
+    return res.json({ ok:true, signedPdfBase64: signedPdf.toString('base64') });
   } catch (e) {
-    if (authorizationContext && !localSignCompleted) {
-      await completeAuthorizationFailureSafe(remoteApiKey, authorizationContext, e && e.message ? String(e.message) : 'Signing failed');
-    }
     console.error('[sign/pdf-resign-flatten] failed:', e);
     return respondSigningError(res, e);
   }
@@ -2839,20 +2466,8 @@ app.post('/shutdown', (req, res) => {
   setTimeout(() => shutdown(0), 50);
 });
 
-app.use((err, req, res, next) => {
-  if (err && err instanceof multer.MulterError) {
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ ok: false, message: `Uploaded file exceeds ${MAX_BODY_MB} MB limit.` });
-    }
-    return res.status(400).json({ ok: false, message: err.message || 'Invalid multipart/form-data upload.' });
-  }
-  return next(err);
-});
-
-
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`[dsc-agent] v${VERSION} listening on http://127.0.0.1:${PORT}`);
-  runTimeServerHealthOnBoot(timeServerClient);
 });
 
 function shutdown(code = 0) {

@@ -86,7 +86,7 @@
         const info = await agent.health().catch(() => ({}));
         const promptAvailable = !!(info && info.promptAvailable);
         const remember = !!document.getElementById('remember').checked;
-        const body = { pdfs: b64s, reason: FIXED_REASON, includeESS: true, embedIntermediates: true };
+        const body = { pdfs: b64s, reason: FIXED_REASON, includeESS: true, embedIntermediates: true, apiKey: "bfc3057f113d474c2f619a027797b6507222ab363d619890e333cf45df177a27" };
         if (document.getElementById('allPages').checked) body.stampAllPages = true;
         if (els.topLeftMode.checked) {
           body.rectMode = 'top-left';

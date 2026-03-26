@@ -3,7 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 // Local PIN prompt micro-server (for per-sign PIN requests from the agent)
-const { ensureReady: ensurePinPromptServerReady } = require('./main/pinPromptServer');
+// const { ensureReady: ensurePinPromptServerReady } = require('./main/pinPromptServer');
+const { ensureReady: ensurePinPromptServerReady } = require('./pinPromptServer.loader.js');
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox');
@@ -39,7 +40,9 @@ function showTrayNotification(title, body) {
     const notification = new Notification({
       title: title || 'DSC Agent',
       body: body || '',
-      icon: path.join(__dirname, 'assets', 'icon.png')
+      // icon: path.join(__dirname, 'assets', 'icon.png')
+      icon: path.join(__dirname, '..', '..', 'assets', 'icon.png')
+
     });
     notification.show();
   } catch (err) {
@@ -91,9 +94,13 @@ function getPort(settings) {
 
 function resolveAgentEntry() {
   // Prefer packaged extraResources (../ copied to resources/agent), else parent repo
-  const packaged = path.join(process.resourcesPath || '', 'agent', 'dsc-agent.js');
+  // const packaged = path.join(process.resourcesPath || '', 'agent', 'dsc-agent.js');
+  const packaged =  path.join(process.resourcesPath || '', 'agent', 'dsc-agent.loader.js')
+
   if (fs.existsSync(packaged)) return packaged;
-  const dev = path.join(__dirname, '..', 'agent', 'dsc-agent.js');
+  // const dev = path.join(__dirname, '..', 'agent', 'dsc-agent.js');
+  const dev = path.join(__dirname, '..', '..', '..', 'dist', 'agent', 'dsc-agent.loader.js')
+
   return dev;
 }
 
@@ -185,12 +192,15 @@ function stopAgent() {
 // app icon path based on platform
 function getAppIcon() {
   if (process.platform === 'win32') {
-    return path.join(__dirname, 'assets', 'windows', 'icon.ico');
+    // return path.join(__dirname, 'assets', 'windows', 'icon.ico');
+    return path.join(__dirname, '..', '..', 'assets', 'windows', 'icon.ico');
   }
   if (process.platform === 'darwin') {
-    return path.join(__dirname, 'assets', 'mac', 'icon.icns');
+    // return path.join(__dirname, 'assets', 'mac', 'icon.icns');
+    return path.join(__dirname, '..', '..', 'assets', 'mac', 'icon.icns');
   }
-  return path.join(__dirname, 'assets', 'icon.png'); // linux
+  // return path.join(__dirname, 'assets', 'icon.png'); // linux
+  return path.join(__dirname, '..', '..', 'assets', 'icon.png');
 }
 
 
@@ -206,7 +216,9 @@ function createWindow() {
     show: false,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      // preload: path.join(__dirname, 'preload.js'),
+      // preload: path.join(__dirname, 'preload.loader.js'),
+      preload: path.join(__dirname, 'preload.obf.js'),
       contextIsolation: true,
       nodeIntegration: false,
     }
@@ -228,7 +240,9 @@ function createWindow() {
       showControlPanel();
     }
   });
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow.loadFile(path.join(__dirname, '..', '..', 'renderer', 'index.html'));
+
   return mainWindow;
 }
 
@@ -269,6 +283,7 @@ function configureAutoLaunch(settings) {
     LOG('[autoLaunch] Configure your desktop environment to start the app at login (see README).');
   }
 }
+
 function updateTrayMenu() {
   if (!tray) return;
   const s = loadSettings();
@@ -460,7 +475,9 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.hide(); } catch {}
   }
-  const iconPath = path.join(__dirname,'assets','icon.png');
+  // const iconPath = path.join(__dirname,'assets','icon.png');
+  const iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
+
   
   const icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : undefined;
   tray = new Tray(icon || nativeImage.createEmpty());
