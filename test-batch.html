@@ -53,6 +53,7 @@
   <div id="results"></div>
 
   <script src="./client/time-provider.js"></script>
+  <script src="./client/dsc-agent-config.js"></script>
   <script src="./client/dsc-agent-client.iife.js"></script>
   <script>
     const els = {
@@ -86,7 +87,7 @@
         const info = await agent.health().catch(() => ({}));
         const promptAvailable = !!(info && info.promptAvailable);
         const remember = !!document.getElementById('remember').checked;
-        const body = { pdfs: b64s, reason: FIXED_REASON, includeESS: true, embedIntermediates: true, apiKey: "bfc3057f113d474c2f619a027797b6507222ab363d619890e333cf45df177a27" };
+        const body = { pdfs: b64s, reason: FIXED_REASON, includeESS: true, embedIntermediates: true, apiKey: window.DSC_CONFIG.apiKey };
         if (document.getElementById('allPages').checked) body.stampAllPages = true;
         if (els.topLeftMode.checked) {
           body.rectMode = 'top-left';

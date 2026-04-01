@@ -23,7 +23,7 @@
     });
   }
 
-  async function discover(timeoutMs = 2000, ports = DEFAULT_PORTS) {
+  async function discover(timeoutMs = 6000, ports = DEFAULT_PORTS) {
     for (const p of ports) {
       try {
         const ctl = new AbortController();

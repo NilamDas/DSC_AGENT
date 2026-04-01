@@ -14,6 +14,9 @@ function loadJsonConfig() {
     const overridePath = process.env.DSC_CONFIG_PATH && process.env.DSC_CONFIG_PATH.trim();
     const candidates = [];
     if (overridePath) candidates.push(overridePath);
+    // Relative to this file's location (works regardless of CWD, e.g. when spawned from electron-app/)
+    candidates.push(path.join(__dirname, '..', '..', 'dsc-agent.config.json'));
+    candidates.push(path.join(__dirname, '..', '..', 'agent.config.json'));
     // project root relative files
     candidates.push(path.join(process.cwd(), 'dsc-agent.config.json'));
     candidates.push(path.join(process.cwd(), 'agent.config.json'));
@@ -144,6 +147,11 @@ const cfg = Object.freeze({
   MAX_BODY_MB: parseInt(process.env.DSC_MAX_BODY_MB || String(fileCfg.maxBodyMb || '100'), 10),
   LTV_ENABLE: String(process.env.DSC_LTV || String(fileCfg.ltv ? 1 : 0)) === '1',
   LTV_STRICT: String(process.env.DSC_LTV_STRICT || String(fileCfg.ltvStrict ? 1 : 0)) === '1',
+  TIME_SERVER_URL: process.env.DSC_TIME_SERVER_URL || (fileCfg.timeServerUrl || ''),
+  TIME_SERVER_ENDPOINT: process.env.DSC_TIME_SERVER_ENDPOINT || (fileCfg.timeServerEndpoint || ''),
+  TIME_SERVER_METHOD: process.env.DSC_TIME_SERVER_METHOD || (fileCfg.timeServerMethod || 'GET'),
+  TIME_SERVER_TIME_FIELD: process.env.DSC_TIME_SERVER_TIME_FIELD || (fileCfg.timeServerTimeField || 'time'),
+  TIME_SERVER_ALLOW_SELF_SIGNED: String(process.env.DSC_TIME_SERVER_ALLOW_SELF_SIGNED || String(fileCfg.timeServerAllowSelfSigned ? 1 : 0)) === '1',
 });
 
 module.exports = cfg;

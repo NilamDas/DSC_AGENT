@@ -1,4 +1,8 @@
-async function runTimeServerHealthOnBoot(timeServerClient) {
+async function runTimeServerHealthOnBoot(timeServerClient, options = {}) {
+  if (options && options.skip) {
+    console.log('[time-server] health check skipped (custom time server configured)');
+    return;
+  }
   try {
     const health = await timeServerClient.checkHealth({ timeoutMs: 2000, retries: 1 });
     console.log('[time-server] health OK:', health);

@@ -126,7 +126,7 @@ async function startAgent() {
   LOG(`Starting agent: ${nodeCmd} ${agentPath}`);
   
   try {
-    agentProc = spawn(nodeCmd, [agentPath], { env, windowsHide: true });
+    agentProc = spawn(nodeCmd, [agentPath], { env, windowsHide: true, cwd: path.dirname(path.dirname(agentPath)) });
     agentProc.stdout.on('data', d => { const s = String(d).trim(); if (s) LOG(`[agent] ${s}`); });
     agentProc.stderr.on('data', d => { const s = String(d).trim(); if (s) LOG(`[agent] ${s}`); });
     agentProc.on('exit', (code, signal) => {

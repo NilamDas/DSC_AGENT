@@ -46,6 +46,7 @@ async function createSigningAuthorization(params = {}, deps = {}) {
   }
 
   const apiKey = toTrimmedString(params.apiKey);
+  const endpoint = toTrimmedString(params.endpoint);
   const payload = params.payload && typeof params.payload === 'object' ? params.payload : null;
 
   if (!apiKey) {
@@ -62,14 +63,24 @@ async function createSigningAuthorization(params = {}, deps = {}) {
 
   try {
     const response = await timeServerClient.createAuthorization(apiKey, payload, {
-      endpoint: '/api/sign/authorizations',
+      endpoint: endpoint || '/api/sign/authorizations',
       timeoutMs: 5000,
       retries: 0,
     });
 
-    const signingTime = parseSigningTime(response && response.signingTime, deps.parseLocalTime);
+    // Accept signingTime from multiple common response field names
+    const rawSigningTime = (response && (
+      response.signingTime || response.time || response.timestamp ||
+      (response.data && (response.data.signingTime || response.data.time))
+    )) || null;
+    // Also check the configured time field name from deps
+    const configuredField = deps && deps.timeField;
+    const rawFromConfigField = configuredField && response ? response[configuredField] : null;
+    const resolvedRaw = (configuredField && rawFromConfigField) ? rawFromConfigField : rawSigningTime;
+    const signingTime = parseSigningTime(resolvedRaw, deps.parseLocalTime);
     if (!signingTime) {
-      const err = new Error('Authorization response is missing a valid signingTime.');
+      const fields = response ? Object.keys(response).join(', ') : 'empty response';
+      const err = new Error(`Authorization response is missing a valid signingTime. Received fields: ${fields}`);
       err.status = 502;
       throw err;
     }

@@ -18,6 +18,7 @@
   <textarea id="signTextInput" placeholder="Enter text to sign..."></textarea><br>
   <button id="signTextBtn">Sign Text</button>
   <pre id="signTextOut"></pre>
+  <script src="./client/dsc-agent-config.js"></script>
   <script src="./client/dsc-agent-client.iife.js"></script>
   <script>
     let agent = null;
@@ -32,7 +33,7 @@
         const text = textarea.value;
         if (!text) throw new Error('Enter text to sign');
         out.textContent = 'Signing...';
-        const body = { text, requirePin: true, apiKey: "bfc3057f113d474c2f619a027797b6507222ab363d619890e333cf45df177a27" };
+        const body = { text, requirePin: true, apiKey: window.DSC_CONFIG.apiKey };
         const r = await fetch(agent.base + '/sign/text', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

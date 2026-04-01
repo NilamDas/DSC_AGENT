@@ -134,6 +134,7 @@
       <object id="viewer" type="application/pdf"></object>
     </div>
 
+    <script src="./client/dsc-agent-config.js"></script>
     <script src="./client/dsc-agent-client.iife.js"></script>
     <script>
       const els = {
@@ -183,7 +184,7 @@
             includeESS: true,
             embedIntermediates: true,
             signingTime: "",
-            apiKey: "bfc3057f113d474c2f619a027797b6507222ab363d619890e333cf45df177a27"
+            apiKey: window.DSC_CONFIG.apiKey
 
             // test data  -->remove or replace with actual user/session data as needed
             // name: "Nilam Das",

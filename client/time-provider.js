@@ -2,8 +2,8 @@
   if (global.DSCTime && typeof global.DSCTime.fetch === 'function') {
     return;
   }
-  const DEFAULT_URL = 'https://sewasetu.assam.gov.in/digitalsig/getServerTime';
-
+  //const DEFAULT_URL = 'https://sewasetu.assam.gov.in/digitalsig/getServerTime';
+const DEFAULT_URL = 'http://localhost:5001/';
   let currentUrl = DEFAULT_URL;
 
   const pad = (n) => String(n).padStart(2, '0');

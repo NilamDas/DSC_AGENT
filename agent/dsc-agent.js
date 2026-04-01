@@ -73,6 +73,14 @@ const SIGN_RECT = cfg.SIGN_RECT;
 const MAX_BODY_MB = cfg.MAX_BODY_MB;
 const LTV_ENABLE = cfg.LTV_ENABLE;
 const LTV_STRICT = cfg.LTV_STRICT;
+const TIME_SERVER_URL = cfg.TIME_SERVER_URL;
+const TIME_SERVER_ENDPOINT = cfg.TIME_SERVER_ENDPOINT;
+const TIME_SERVER_METHOD = cfg.TIME_SERVER_METHOD;
+const TIME_SERVER_TIME_FIELD = cfg.TIME_SERVER_TIME_FIELD;
+const TIME_SERVER_ALLOW_SELF_SIGNED = cfg.TIME_SERVER_ALLOW_SELF_SIGNED;
+
+// Apply time server base URL from config (falls back to default if empty)
+if (TIME_SERVER_URL) timeServerClient.configure({ baseUrl: TIME_SERVER_URL, method: TIME_SERVER_METHOD, timeField: TIME_SERVER_TIME_FIELD, allowSelfSigned: TIME_SERVER_ALLOW_SELF_SIGNED });
 
 // In-memory session PIN (optional, process-lifetime only)
 let SESSION_PIN = '';
@@ -230,7 +238,7 @@ function buildTimeServerUserBody(reqBody = {}) {
 }
 
 function resolveRemoteApiKey(req, body = {}) {
-  // const headerKey = req && typeof req.get === 'function' ? String(req.get('x-api-key') || '').trim() : '';
+  const headerKey = req && typeof req.get === 'function' ? String(req.get('x-api-key') || '').trim() : '';
   const bodyKey = body && body.apiKey !== undefined && body.apiKey !== null ? String(body.apiKey).trim() : '';
   return bodyKey || headerKey;
 }
@@ -2021,6 +2029,7 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
     const signerCert = new pkijs.Certificate({ schema: asn.result });
     const tsBody = buildTimeServerUserBody({ ...(req.body || {}), pin });
     remoteApiKey = resolveRemoteApiKey(req, tsBody);
+     console.log('Time Server:', TIME_SERVER_ENDPOINT);
     try {
       const authPayload = buildCreateAuthorizationPayload({
         requestId: signRequestId,
@@ -2034,7 +2043,8 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
       authorizationContext = await createSigningAuthorization({
         apiKey: remoteApiKey,
         payload: authPayload,
-      }, { timeServerClient, parseLocalTime });
+        endpoint: TIME_SERVER_ENDPOINT || undefined,
+      }, { timeServerClient, parseLocalTime, timeField: TIME_SERVER_TIME_FIELD || undefined });
     } catch (authErr) {
       const mapped = extractRemoteAuthError(authErr, 'Signing authorization failed.');
       return res.status(mapped.status).json({ ok: false, message: mapped.message, reason: mapped.reason });
@@ -2153,32 +2163,34 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
     const signedPdf = await new SignPdf().sign(prepared, signer);
     localSignCompleted = true;
 
-    try {
-      const completionPayload = buildCompletionPayload({
-        authorizationToken: authorizationContext.authorizationToken,
-        status: 'completed',
-        sourceBuffer: inputBuf,
-        signedBuffer: signedPdf,
-        signerIdentity: {
-          name: tsBody.name || userName,
-          machineHash: tsBody.machineHash,
-        },
-        signingTime: signingTime2,
-        signedAt: new Date(),
-      });
-      await completeSigningAuthorization({
-        apiKey: remoteApiKey,
-        authorizationId: authorizationContext.authorizationId,
-        payload: completionPayload,
-      }, { timeServerClient });
-    } catch (completionErr) {
-      const mapped = extractRemoteAuthError(completionErr, 'Signing completed locally, but authorization completion failed.');
-      return res.status(mapped.status).json({
-        ok: false,
-        message: mapped.message,
-        reason: mapped.reason,
-        authorizationId: authorizationContext.authorizationId,
-      });
+    if (authorizationContext.authorizationToken) {
+      try {
+        const completionPayload = buildCompletionPayload({
+          authorizationToken: authorizationContext.authorizationToken,
+          status: 'completed',
+          sourceBuffer: inputBuf,
+          signedBuffer: signedPdf,
+          signerIdentity: {
+            name: tsBody.name || userName,
+            machineHash: tsBody.machineHash,
+          },
+          signingTime: signingTime2,
+          signedAt: new Date(),
+        });
+        await completeSigningAuthorization({
+          apiKey: remoteApiKey,
+          authorizationId: authorizationContext.authorizationId,
+          payload: completionPayload,
+        }, { timeServerClient });
+      } catch (completionErr) {
+        const mapped = extractRemoteAuthError(completionErr, 'Signing completed locally, but authorization completion failed.');
+        return res.status(mapped.status).json({
+          ok: false,
+          message: mapped.message,
+          reason: mapped.reason,
+          authorizationId: authorizationContext.authorizationId,
+        });
+      }
     }
 
     res.json({ ok: true, signedPdfBase64: signedPdf.toString('base64') });
@@ -2274,7 +2286,8 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
             sourceBuffer: inputBuf,
             signerIdentity,
           }),
-        }, { timeServerClient, parseLocalTime });
+          endpoint: TIME_SERVER_ENDPOINT || undefined,
+        }, { timeServerClient, parseLocalTime, timeField: TIME_SERVER_TIME_FIELD || undefined });
         const signingTime = authorizationContext.signingTime;
 
         let pdfForPlaceholder = inputBuf;
@@ -2417,19 +2430,21 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
         const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
         const signedPdf = await new SignPdf().sign(pdfWithPlaceholder, signer);
         localSignCompleted = true;
-        await completeSigningAuthorization({
-          apiKey: remoteApiKey,
-          authorizationId: authorizationContext.authorizationId,
-          payload: buildCompletionPayload({
-            authorizationToken: authorizationContext.authorizationToken,
-            status: 'completed',
-            sourceBuffer: inputBuf,
-            signedBuffer: signedPdf,
-            signerIdentity,
-            signingTime,
-            signedAt: new Date(),
-          }),
-        }, { timeServerClient });
+        if (authorizationContext.authorizationToken) {
+          await completeSigningAuthorization({
+            apiKey: remoteApiKey,
+            authorizationId: authorizationContext.authorizationId,
+            payload: buildCompletionPayload({
+              authorizationToken: authorizationContext.authorizationToken,
+              status: 'completed',
+              sourceBuffer: inputBuf,
+              signedBuffer: signedPdf,
+              signerIdentity,
+              signingTime,
+              signedAt: new Date(),
+            }),
+          }, { timeServerClient });
+        }
         return { ok: true, signedPdfBase64: signedPdf.toString('base64') };
       } catch (e) {
         if (authorizationContext && !localSignCompleted) {
@@ -2595,7 +2610,8 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
             machineHash: tsBody.machineHash,
           },
         }),
-      }, { timeServerClient, parseLocalTime });
+        endpoint: TIME_SERVER_ENDPOINT || undefined,
+      }, { timeServerClient, parseLocalTime, timeField: TIME_SERVER_TIME_FIELD || undefined });
     } catch (authErr) {
       const mapped = extractRemoteAuthError(authErr, 'Signing authorization failed.');
       return res.status(mapped.status).json({ ok: false, message: mapped.message, reason: mapped.reason });
@@ -2790,31 +2806,33 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
     const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
     const signedPdf = await new SignPdf().sign(pdfWithPlaceholder, signer);
     localSignCompleted = true;
-    try {
-      await completeSigningAuthorization({
-        apiKey: remoteApiKey,
-        authorizationId: authorizationContext.authorizationId,
-        payload: buildCompletionPayload({
-          authorizationToken: authorizationContext.authorizationToken,
-          status: 'completed',
-          sourceBuffer: inputBuf,
-          signedBuffer: signedPdf,
-          signerIdentity: {
-            name: tsBody.name || userName,
-            machineHash: tsBody.machineHash,
-          },
-          signingTime,
-          signedAt: new Date(),
-        }),
-      }, { timeServerClient });
-    } catch (completionErr) {
-      const mapped = extractRemoteAuthError(completionErr, 'Signing completed locally, but authorization completion failed.');
-      return res.status(mapped.status).json({
-        ok: false,
-        message: mapped.message,
-        reason: mapped.reason,
-        authorizationId: authorizationContext.authorizationId,
-      });
+    if (authorizationContext.authorizationToken) {
+      try {
+        await completeSigningAuthorization({
+          apiKey: remoteApiKey,
+          authorizationId: authorizationContext.authorizationId,
+          payload: buildCompletionPayload({
+            authorizationToken: authorizationContext.authorizationToken,
+            status: 'completed',
+            sourceBuffer: inputBuf,
+            signedBuffer: signedPdf,
+            signerIdentity: {
+              name: tsBody.name || userName,
+              machineHash: tsBody.machineHash,
+            },
+            signingTime,
+            signedAt: new Date(),
+          }),
+        }, { timeServerClient });
+      } catch (completionErr) {
+        const mapped = extractRemoteAuthError(completionErr, 'Signing completed locally, but authorization completion failed.');
+        return res.status(mapped.status).json({
+          ok: false,
+          message: mapped.message,
+          reason: mapped.reason,
+          authorizationId: authorizationContext.authorizationId,
+        });
+      }
     }
     // Important: do not modify bytes post-sign; any change invalidates the signature
     return res.json({ ok: true, signedPdfBase64: signedPdf.toString('base64') });
@@ -2852,7 +2870,7 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`[dsc-agent] v${VERSION} listening on http://127.0.0.1:${PORT}`);
-  runTimeServerHealthOnBoot(timeServerClient);
+  runTimeServerHealthOnBoot(timeServerClient, { skip: !!TIME_SERVER_URL });
 });
 
 function shutdown(code = 0) {
