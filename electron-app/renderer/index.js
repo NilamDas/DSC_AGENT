@@ -209,7 +209,11 @@ function renderTokenDropdown(response) {
 
   sel.value = chosen;
   if (sel.value !== chosen) sel.value = '__custom__';
-  if (sel.value !== '__custom__') setDllForSelection(sel.value);
+  if (sel.value !== '__custom__') {
+    setDllForSelection(sel.value);
+    // Sync the running agent so it uses the correct named-token DLL
+    syncAgentTokenSelection(sel.value).catch((err) => console.warn('Failed to sync token on load:', err));
+  }
 }
 
 async function load() {
@@ -290,6 +294,22 @@ document.getElementById('btn-save').addEventListener('click', async () => {
     await window.DSC.setSettings(current);
     settings = current;
     updateAgentUrl();
+
+    // Sync the running agent immediately so it uses the saved DLL without a restart.
+    // This is critical when the dropdown is on "Custom" — the agent has no other way
+    // to learn about a manually-entered DLL path.
+    if (dllPath && tokenState.baseUrl) {
+      const headers = { ...tokenState.headers, 'Content-Type': 'application/json' };
+      try {
+        await fetch(`${tokenState.baseUrl}/token/select`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ dll: dllPath }),
+        });
+      } catch (syncErr) {
+        console.warn('Failed to sync DLL with running agent:', syncErr);
+      }
+    }
 
     renderDetails('Configuration Saved', {
       ok: true,
