@@ -1,7 +1,7 @@
 {
   "requirePinPerSign": true,
   "pinPrompt": {},
-   "timeServerUrl": "http://127.0.0.1:5001",
+   "timeServerUrl": "https://103.158.204.86",
   "timeServerEndpoint": "/api/time",
   "timeServerMethod": "POST",
   "timeServerTimeField": "server_time",

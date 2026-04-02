@@ -1990,7 +1990,6 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
   let remoteApiKey = '';
   let localSignCompleted = false;
   try {
-    const signRequestId = 'sign-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
 
     const { dll } = ensureDllPicked();
     // Ensure DSC token is present before proceeding
