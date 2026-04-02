@@ -23,9 +23,6 @@
 //   set DSC_PIN=123456    (or send pin in request body)
 //   node dsc-agent.js
 
-require('dotenv').config({
-  path: require('path').resolve(__dirname, '..', '.env'),
-});
 
 const fs = require('fs');
 const path = require('path');
@@ -49,11 +46,9 @@ const timeServerClient = require('./timeServerClient');
 const { runTimeServerHealthOnBoot } = require('./services/timeServerHealthService');
 const {
   createSigningAuthorization,
-  completeSigningAuthorization,
 } = require('./services/signingTimeService');
 const {
   buildCreateAuthorizationPayload,
-  buildCompletionPayload,
 } = require('./lib/signAuthorizationPayloadBuilder');
 
 const VERSION = '0.1.0';
@@ -244,16 +239,25 @@ function resolveRemoteApiKey(req, body = {}) {
 }
 
 function extractRemoteAuthError(error, fallbackMessage) {
-  const remoteMessage = error && error.response && error.response.error && error.response.error.message
-    ? String(error.response.error.message)
-    : '';
-  const remoteCode = error && error.response && error.response.error && error.response.error.code
-    ? String(error.response.error.code)
-    : '';
+  const response = error && error.response ? error.response : null;
+  const remoteMessage = response && response.error && response.error.message
+    ? String(response.error.message)
+    : response && response.error && response.error.msg
+      ? String(response.error.msg)
+      : response && response.msg
+        ? String(response.msg)
+        : response && response.message
+          ? String(response.message)
+          : '';
+  const remoteCode = response && response.error && response.error.code
+    ? String(response.error.code)
+    : response && response.code
+      ? String(response.code)
+      : '';
 
   return {
     status: error && typeof error.status === 'number' ? error.status : 502,
-    message: remoteMessage || fallbackMessage,
+    message: remoteMessage || (error && error.message ? String(error.message) : fallbackMessage),
     reason: remoteCode || (error && error.message ? String(error.message) : 'remote_authorization_error'),
   };
 }
@@ -2029,24 +2033,22 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
     const signerCert = new pkijs.Certificate({ schema: asn.result });
     const tsBody = buildTimeServerUserBody({ ...(req.body || {}), pin });
     remoteApiKey = resolveRemoteApiKey(req, tsBody);
-     console.log('Time Server:', TIME_SERVER_ENDPOINT);
     try {
       const authPayload = buildCreateAuthorizationPayload({
-        requestId: signRequestId,
-        sourceBuffer: inputBuf,
         signerIdentity: {
           name: tsBody.name || signerCert.subject.typesAndValues.find(tv => tv.type === '2.5.4.3')?.value.valueBlock.value || 'Unknown',
           machineHash: tsBody.machineHash,
         },
+        remoteApiKey
       });
       
       authorizationContext = await createSigningAuthorization({
-        apiKey: remoteApiKey,
         payload: authPayload,
         endpoint: TIME_SERVER_ENDPOINT || undefined,
       }, { timeServerClient, parseLocalTime, timeField: TIME_SERVER_TIME_FIELD || undefined });
     } catch (authErr) {
       const mapped = extractRemoteAuthError(authErr, 'Signing authorization failed.');
+      console.log('authErr ', authErr)
       return res.status(mapped.status).json({ ok: false, message: mapped.message, reason: mapped.reason });
     }
 
@@ -2163,41 +2165,9 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
     const signedPdf = await new SignPdf().sign(prepared, signer);
     localSignCompleted = true;
 
-    if (authorizationContext.authorizationToken) {
-      try {
-        const completionPayload = buildCompletionPayload({
-          authorizationToken: authorizationContext.authorizationToken,
-          status: 'completed',
-          sourceBuffer: inputBuf,
-          signedBuffer: signedPdf,
-          signerIdentity: {
-            name: tsBody.name || userName,
-            machineHash: tsBody.machineHash,
-          },
-          signingTime: signingTime2,
-          signedAt: new Date(),
-        });
-        await completeSigningAuthorization({
-          apiKey: remoteApiKey,
-          authorizationId: authorizationContext.authorizationId,
-          payload: completionPayload,
-        }, { timeServerClient });
-      } catch (completionErr) {
-        const mapped = extractRemoteAuthError(completionErr, 'Signing completed locally, but authorization completion failed.');
-        return res.status(mapped.status).json({
-          ok: false,
-          message: mapped.message,
-          reason: mapped.reason,
-          authorizationId: authorizationContext.authorizationId,
-        });
-      }
-    }
 
     res.json({ ok: true, signedPdfBase64: signedPdf.toString('base64') });
   } catch (e) {
-    if (authorizationContext && !localSignCompleted) {
-      await completeAuthorizationFailureSafe(remoteApiKey, authorizationContext, e && e.message ? String(e.message) : 'Signing failed');
-    }
     console.error('[sign/pdf] failed:', e);
     return respondSigningError(res, e);
   }
@@ -2280,11 +2250,9 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
         const inputBuf = Buffer.from(b64, 'base64');
         assertNoExistingSignature(inputBuf);
         authorizationContext = await createSigningAuthorization({
-          apiKey: remoteApiKey,
           payload: buildCreateAuthorizationPayload({
-            requestId: `${signRequestId}-${index + 1}`,
-            sourceBuffer: inputBuf,
             signerIdentity,
+            remoteApiKey
           }),
           endpoint: TIME_SERVER_ENDPOINT || undefined,
         }, { timeServerClient, parseLocalTime, timeField: TIME_SERVER_TIME_FIELD || undefined });
@@ -2430,31 +2398,10 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
         const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
         const signedPdf = await new SignPdf().sign(pdfWithPlaceholder, signer);
         localSignCompleted = true;
-        if (authorizationContext.authorizationToken) {
-          await completeSigningAuthorization({
-            apiKey: remoteApiKey,
-            authorizationId: authorizationContext.authorizationId,
-            payload: buildCompletionPayload({
-              authorizationToken: authorizationContext.authorizationToken,
-              status: 'completed',
-              sourceBuffer: inputBuf,
-              signedBuffer: signedPdf,
-              signerIdentity,
-              signingTime,
-              signedAt: new Date(),
-            }),
-          }, { timeServerClient });
-        }
         return { ok: true, signedPdfBase64: signedPdf.toString('base64') };
       } catch (e) {
-        if (authorizationContext && !localSignCompleted) {
-          await completeAuthorizationFailureSafe(remoteApiKey, authorizationContext, e && e.message ? String(e.message) : 'Signing failed');
-        }
-        if (e && typeof e.status === 'number') {
-          const mappedRemote = extractRemoteAuthError(e, 'Signing authorization failed.');
-          return { ok: false, message: mappedRemote.message, reason: mappedRemote.reason, authorizationId: authorizationContext && authorizationContext.authorizationId ? authorizationContext.authorizationId : undefined };
-        }
         const mapped = translatePkcs11Error(e);
+        console.log('authErr ', e)
         return { ok: false, message: mapped.message };
       }
     }
@@ -2601,19 +2548,18 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
     remoteApiKey = resolveRemoteApiKey(req, tsBody);
     try {
       authorizationContext = await createSigningAuthorization({
-        apiKey: remoteApiKey,
         payload: buildCreateAuthorizationPayload({
-          requestId: signRequestId,
-          sourceBuffer: inputBuf,
           signerIdentity: {
             name: tsBody.name || userName,
             machineHash: tsBody.machineHash,
           },
+          remoteApiKey
         }),
         endpoint: TIME_SERVER_ENDPOINT || undefined,
       }, { timeServerClient, parseLocalTime, timeField: TIME_SERVER_TIME_FIELD || undefined });
     } catch (authErr) {
       const mapped = extractRemoteAuthError(authErr, 'Signing authorization failed.');
+      console.log('authErr ', authErr)
       return res.status(mapped.status).json({ ok: false, message: mapped.message, reason: mapped.reason });
     }
     const signingTime2 = authorizationContext.signingTime;
@@ -2806,40 +2752,11 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
     const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
     const signedPdf = await new SignPdf().sign(pdfWithPlaceholder, signer);
     localSignCompleted = true;
-    if (authorizationContext.authorizationToken) {
-      try {
-        await completeSigningAuthorization({
-          apiKey: remoteApiKey,
-          authorizationId: authorizationContext.authorizationId,
-          payload: buildCompletionPayload({
-            authorizationToken: authorizationContext.authorizationToken,
-            status: 'completed',
-            sourceBuffer: inputBuf,
-            signedBuffer: signedPdf,
-            signerIdentity: {
-              name: tsBody.name || userName,
-              machineHash: tsBody.machineHash,
-            },
-            signingTime,
-            signedAt: new Date(),
-          }),
-        }, { timeServerClient });
-      } catch (completionErr) {
-        const mapped = extractRemoteAuthError(completionErr, 'Signing completed locally, but authorization completion failed.');
-        return res.status(mapped.status).json({
-          ok: false,
-          message: mapped.message,
-          reason: mapped.reason,
-          authorizationId: authorizationContext.authorizationId,
-        });
-      }
-    }
+
     // Important: do not modify bytes post-sign; any change invalidates the signature
     return res.json({ ok: true, signedPdfBase64: signedPdf.toString('base64') });
   } catch (e) {
-    if (authorizationContext && !localSignCompleted) {
-      await completeAuthorizationFailureSafe(remoteApiKey, authorizationContext, e && e.message ? String(e.message) : 'Signing failed');
-    }
+
     console.error('[sign/pdf-resign-flatten] failed:', e);
     return respondSigningError(res, e);
   }

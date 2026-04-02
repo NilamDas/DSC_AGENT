@@ -30,9 +30,11 @@ function toTrimmedString(value) {
 }
 
 function extractRemoteErrorMessage(error, fallback) {
-  if (error && error.response && error.response.error && error.response.error.message) {
-    return String(error.response.error.message);
-  }
+  const response = error && error.response ? error.response : null;
+  if (response && response.error && response.error.message) return String(response.error.message);
+  if (response && response.error && response.error.msg) return String(response.error.msg);
+  if (response && response.msg) return String(response.msg);
+  if (response && response.message) return String(response.message);
   if (error && error.message) return String(error.message);
   return fallback;
 }
@@ -45,8 +47,7 @@ async function createSigningAuthorization(params = {}, deps = {}) {
     throw err;
   }
 
-  const apiKey = toTrimmedString(params.apiKey);
-  const endpoint = toTrimmedString(params.endpoint);
+  const apiKey = toTrimmedString(params.payload.apiKey);
   const payload = params.payload && typeof params.payload === 'object' ? params.payload : null;
 
   if (!apiKey) {
@@ -60,19 +61,17 @@ async function createSigningAuthorization(params = {}, deps = {}) {
     err.status = 400;
     throw err;
   }
-
+  console.log(apiKey)
   try {
     const response = await timeServerClient.createAuthorization(apiKey, payload, {
-      endpoint: endpoint || '/api/sign/authorizations',
+      endpoint: '/api/time',
       timeoutMs: 5000,
       retries: 0,
     });
-
+    console.log('response ', response)
     // Accept signingTime from multiple common response field names
-    const rawSigningTime = (response && (
-      response.signingTime || response.time || response.timestamp ||
-      (response.data && (response.data.signingTime || response.data.time))
-    )) || null;
+    const rawSigningTime = (response && response.server_time) || null;
+    
     // Also check the configured time field name from deps
     const configuredField = deps && deps.timeField;
     const rawFromConfigField = configuredField && response ? response[configuredField] : null;
@@ -86,66 +85,18 @@ async function createSigningAuthorization(params = {}, deps = {}) {
     }
 
     return {
-      authorizationId: toTrimmedString(response && response.authorizationId),
-      authorizationToken: toTrimmedString(response && response.authorizationToken),
-      requestId: toTrimmedString(response && response.requestId),
-      decision: toTrimmedString(response && response.decision),
       signingTime,
-      expiresAt: toTrimmedString(response && response.expiresAt),
-      bind: response && typeof response.bind === 'object' ? response.bind : {},
-      remaining: response && response.remaining,
       raw: response,
     };
   } catch (error) {
     const err = new Error(extractRemoteErrorMessage(error, 'Unable to create signing authorization.'));
     if (error && typeof error.status === 'number') err.status = error.status;
     if (error && error.response) err.response = error.response;
-    throw err;
-  }
-}
-
-async function completeSigningAuthorization(params = {}, deps = {}) {
-  const timeServerClient = deps && deps.timeServerClient;
-  if (!timeServerClient || typeof timeServerClient.completeAuthorization !== 'function') {
-    const err = new Error('Time server client is unavailable. Signing authorization cannot be completed.');
-    err.status = 500;
-    throw err;
-  }
-
-  const apiKey = toTrimmedString(params.apiKey);
-  const authorizationId = toTrimmedString(params.authorizationId);
-  const payload = params.payload && typeof params.payload === 'object' ? params.payload : null;
-
-  if (!apiKey) {
-    const err = new Error('API key is required for signing completion.');
-    err.status = 400;
-    throw err;
-  }
-  if (!authorizationId) {
-    const err = new Error('authorizationId is required for signing completion.');
-    err.status = 400;
-    throw err;
-  }
-  if (!payload) {
-    const err = new Error('Completion payload is required.');
-    err.status = 400;
-    throw err;
-  }
-
-  try {
-    return await timeServerClient.completeAuthorization(apiKey, authorizationId, payload, {
-      timeoutMs: 5000,
-      retries: 0,
-    });
-  } catch (error) {
-    const err = new Error(extractRemoteErrorMessage(error, 'Unable to complete signing authorization.'));
-    if (error && typeof error.status === 'number') err.status = error.status;
-    if (error && error.response) err.response = error.response;
+    console.log('err ', err)
     throw err;
   }
 }
 
 module.exports = {
   createSigningAuthorization,
-  completeSigningAuthorization,
 };
