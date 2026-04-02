@@ -37,6 +37,8 @@ const DEFAULT_CANDIDATES = [
   'C:/Windows/SysWOW64/SignatureP11.dll',
   'C:/Windows/System32/eps2003csp11.dll',
   'C:/Windows/SysWOW64/eps2003csp11.dll',
+  'C:/Windows/System32/eps2003csp11v2.dll',
+  'C:/Windows/SysWOW64/eps2003csp11v2.dll',
   'C:/Program Files/OpenSC Project/OpenSC/pkcs11/opensc-pkcs11.dll',
   'C:/Program Files (x86)/OpenSC Project/OpenSC/pkcs11/opensc-pkcs11.dll',
   'C:/Windows/System32/eTPKCS11.dll',
@@ -86,6 +88,16 @@ const cfg = Object.freeze({
         '/usr/lib/libeps2003csp11.so',
         '/usr/local/lib/libeps2003csp11.so',
         '/usr/local/lib/libeps2003csp11.dylib',
+      ],
+    },
+    'HYP 2003': {
+      name: 'HYP 2003',
+      paths: [
+        'C:/Windows/System32/eps2003csp11v2.dll',
+        'C:/Windows/SysWOW64/eps2003csp11v2.dll',
+        '/usr/lib/libeps2003csp11v2.so',
+        '/usr/local/lib/libeps2003csp11v2.so',
+        '/usr/local/lib/libeps2003csp11v2.dylib',
       ],
     },
     'SafeNet eToken': {

@@ -640,7 +640,7 @@ async function promptPinInteractive(hintMessage) {
   return pinPromptClient.promptPinInteractive(PIN_PROMPT_URL, PIN_PROMPT_TOKEN, hintMessage);
 }
 
-function pickModule() { return pkcs11lib.pickModule(USER_SELECTED_DLL || undefined); }
+function pickModule() { return pkcs11lib.pickModule(PKCS11_DLL || undefined); }
 
 function getSlotHandle(p11, needToken = true) {
   let slots = [];
