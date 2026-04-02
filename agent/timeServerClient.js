@@ -63,6 +63,7 @@ async function requestJson(path, { method = 'GET', headers = {}, body, timeoutMs
   let lastErr;
 
   for (let i = 0; i <= retries; i += 1) {
+    console.log('url is ', url)
     try {
       const res = await fetchWithTimeout(
         url,
@@ -112,7 +113,7 @@ async function checkHealth({ timeoutMs = 2000, retries = 1 } = {}) {
 async function createAuthorization(
   apiKey,
   payload = {},
-  { endpoint = '/api/sign/authorizations', timeoutMs = 5000, retries = 0 } = {}
+  { endpoint = '/api/time', timeoutMs = 5000, retries = 0 } = {}
 ) {
   const effectiveApiKey = (typeof apiKey === 'string' && apiKey.trim())
     ? apiKey.trim()
@@ -142,7 +143,7 @@ async function createAuthorization(
     const pathWithQuery = qs ? `${endpoint}?${qs}` : endpoint;
     return requestJson(pathWithQuery, { method: 'GET', timeoutMs, retries, headers: {} });
   }
-
+  console.log('endpoint is ', endpoint)
   // POST: send as JSON body
   return requestJson(endpoint, {
     method: 'POST',
@@ -153,40 +154,9 @@ async function createAuthorization(
   });
 }
 
-async function completeAuthorization(
-  apiKey,
-  authorizationId,
-  payload = {},
-  { endpoint, timeoutMs = 5000, retries = 0 } = {}
-) {
-  const effectiveApiKey = (typeof apiKey === 'string' && apiKey.trim())
-    ? apiKey.trim()
-    : null;
-  const normalizedAuthorizationId = typeof authorizationId === 'string' ? authorizationId.trim() : '';
-
-  if (!effectiveApiKey) {
-    throw new Error('apiKey is required');
-  }
-  if (!normalizedAuthorizationId) {
-    throw new Error('authorizationId is required');
-  }
-
-  const targetEndpoint = endpoint || `/api/sign/authorizations/${encodeURIComponent(normalizedAuthorizationId)}/complete`;
-
-  return requestJson(targetEndpoint, {
-    method: 'POST',
-    timeoutMs,
-    retries,
-    headers: {
-      'x-api-key': effectiveApiKey,
-    },
-    body: payload,
-  });
-}
 
 module.exports = {
   configure,
   checkHealth,
   createAuthorization,
-  completeAuthorization,
 };
