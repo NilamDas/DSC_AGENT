@@ -156,7 +156,6 @@ function respondSigningError(res, err) {
 const waitFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function promptPinEnsuringToken(dll, promptMessage, tokenMissingMessage, options = {}) {
-  const { waitAfterPromptMs = 600 } = options || {};
   try {
     ensureTokenReady(dll);
   } catch (err) {
@@ -169,7 +168,6 @@ async function promptPinEnsuringToken(dll, promptMessage, tokenMissingMessage, o
   }
 
   const pin = await promptPinInteractive(promptMessage);
-  if (waitAfterPromptMs > 0) await waitFor(waitAfterPromptMs);
 
   try {
     ensureTokenReady(dll);

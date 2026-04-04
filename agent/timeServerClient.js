@@ -6,7 +6,7 @@
 
 const https = require('https');
 
-let DEFAULT_BASE_URL = 'https://103.158.204.86';
+let DEFAULT_BASE_URL = 'http://10.177.15.81:5001';
 let DEFAULT_METHOD = 'GET';
 let DEFAULT_TIME_FIELD = 'time';
 let DEFAULT_ALLOW_SELF_SIGNED = false;

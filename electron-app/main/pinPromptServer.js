@@ -124,8 +124,8 @@ async function showPinDialog(message, getMainWindow) {
         w.webContents.send('pin:focus');
       });
 
-      const onSubmit = (evt, pin) => finish(pin);
-      const onCancel = () => finish(undefined);
+      const onSubmit = (evt, pin) => { ipcMain.removeListener('pin:cancel', onCancel); finish(pin); };
+      const onCancel = () => { ipcMain.removeListener('pin:submit', onSubmit); finish(undefined); };
       ipcMain.once('pin:submit', onSubmit);
       ipcMain.once('pin:cancel', onCancel);
     } catch {
