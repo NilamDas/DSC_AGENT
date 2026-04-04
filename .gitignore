@@ -5,3 +5,4 @@ dsc_signer_working.tar
 /electron-app/release
 /.env
 /electron-app/bin/
+client/dsc-agent-config.js
