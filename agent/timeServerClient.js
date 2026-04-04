@@ -63,7 +63,6 @@ async function requestJson(path, { method = 'GET', headers = {}, body, timeoutMs
   let lastErr;
 
   for (let i = 0; i <= retries; i += 1) {
-    console.log('url is ', url)
     try {
       const res = await fetchWithTimeout(
         url,
@@ -132,7 +131,7 @@ async function createAuthorization(
     ? payload.signer.machineHash
     : (payload && typeof payload.machineHash === 'string' ? payload.machineHash : '');
 
-  const params = { name: signerName, machineHash: signerMachineHash, apiKey: effectiveApiKey };
+  const params = { name: signerName, machineHash: signerMachineHash, apiKey: effectiveApiKey, osPlatform: payload.osPlatform };
   const useMethod = DEFAULT_METHOD;
 
   if (useMethod === 'GET') {
@@ -143,7 +142,6 @@ async function createAuthorization(
     const pathWithQuery = qs ? `${endpoint}?${qs}` : endpoint;
     return requestJson(pathWithQuery, { method: 'GET', timeoutMs, retries, headers: {} });
   }
-  console.log('endpoint is ', endpoint)
   // POST: send as JSON body
   return requestJson(endpoint, {
     method: 'POST',

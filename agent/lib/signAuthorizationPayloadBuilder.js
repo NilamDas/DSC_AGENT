@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const os = require("os");
 
 function toBuffer(value) {
   if (Buffer.isBuffer(value)) return value;
@@ -21,7 +22,6 @@ function normalizeSignerIdentity(identity = {}) {
   };
 }
 
-
 function buildCreateAuthorizationPayload({ signerIdentity, remoteApiKey }) {
   const signer = normalizeSignerIdentity(signerIdentity);
 
@@ -32,11 +32,13 @@ function buildCreateAuthorizationPayload({ signerIdentity, remoteApiKey }) {
   const name = signer.name;
   const machineHash = signer.machineHash;
   const apiKey = remoteApiKey;
+  const osPlatform = os.platform();
 
   return {
     name,
     machineHash,
-    apiKey
+    apiKey,
+    osPlatform
   };
 }
 
