@@ -4,5 +4,5 @@
 //   <script src="./client/dsc-agent-client.iife.js"></script>
 
 window.DSC_CONFIG = {
-  apiKey: "bfc3057f113d474c2f619a027797b6507222ab363d619890e333cf45df177a27",
+  apiKey: "6d801253672ab113218b1c799fe113e4dbcec8b7b9d5433d9398f48cb8633b76",
 };

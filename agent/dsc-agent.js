@@ -616,6 +616,7 @@ function clampRectToPage(rect, pageSize) {
     return [x1, y1, x2, y2];
   } catch { return rect; }
 }
+
 function cors(req, res, next) {
   const origin = req.headers.origin || '';
   const allowed = ALLOW.includes('*') || ALLOW.includes(origin);
@@ -1848,6 +1849,7 @@ app.post('/token/details', requireAuth, async (req, res) => {
     if (!pin && SESSION_PIN) pin = SESSION_PIN;
     let requirePin = (req.body && req.body.requirePin === true) || REQUIRE_PIN_PER_SIGN;
     if (SESSION_PIN && !(req.body && req.body.requirePin === true)) requirePin = false;
+
     if (requirePin) {
       try {
         pin = await promptPinInteractive('Enter token PIN to view details');
@@ -1856,6 +1858,7 @@ app.post('/token/details', requireAuth, async (req, res) => {
         return res.status(400).json({ ok: false, message: e.message || 'PIN required' });
       }
     }
+
     if (req.body && req.body.rememberSessionPin === false) SESSION_PIN = '';
     if (!pin) return res.status(400).json({ ok: false, message: 'PIN is required' });
 
@@ -2055,13 +2058,11 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
     const userName = signerCert.subject.typesAndValues.find(tv => tv.type === '2.5.4.3')?.value.valueBlock.value || 'Unknown';
     const signingTime2 = authorizationContext.signingTime;
     const signingTime = signingTime2;
-    console.log('Signing time:', signingTime);
 
     // Compose the signature text for dynamic sizing
     const pad = (n) => String(n).padStart(2, '0');
     // const dt = signingTime2 || new Date();
      const dt = signingTime2;
-    console.log('Using signing time:', dt);
     const tsText = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
     const line1 = `Digitally signed by ${userName}`;
     const line2 = `Date: ${tsText}`;

@@ -61,14 +61,13 @@ async function createSigningAuthorization(params = {}, deps = {}) {
     err.status = 400;
     throw err;
   }
-  console.log(apiKey)
   try {
     const response = await timeServerClient.createAuthorization(apiKey, payload, {
       endpoint: '/api/time',
       timeoutMs: 5000,
       retries: 0,
     });
-    console.log('response ', response)
+
     // Accept signingTime from multiple common response field names
     const rawSigningTime = (response && response.server_time) || null;
     
