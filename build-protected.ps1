@@ -64,21 +64,47 @@ function Write-AsciiFile {
 function Invoke-BytenodeCompile {
   param(
     [string]$InputFile,
-    [string]$OutputFile
+    [string]$OutputFile,
+    [switch]$Electron,
+    [string]$ElectronPath,
+    [string[]]$NodePathEntries = @()
   )
 
   $compileScript = @'
 const bytenode = require('bytenode');
-const [inputFile, outputFile] = process.argv.slice(1);
+const [inputFile, outputFile, runtimeKind, runtimePath] = process.argv.slice(1);
 (async () => {
-  await bytenode.compileFile({ filename: inputFile, output: outputFile });
+  const options = { filename: inputFile, output: outputFile };
+  if (runtimeKind === 'electron') {
+    options.electron = true;
+    if (runtimePath) {
+      options.electronPath = runtimePath;
+    }
+  }
+  await bytenode.compileFile(options);
 })().catch((error) => {
   console.error(error);
   process.exit(1);
 });
 '@
 
-  Invoke-Checked -FilePath 'node' -Arguments @('-e', $compileScript, $InputFile, $OutputFile)
+  $runtimeKind = if ($Electron) { 'electron' } else { 'node' }
+  $runtimePathArg = if ($Electron -and $ElectronPath) { $ElectronPath } else { '' }
+  $previousNodePath = $env:NODE_PATH
+  try {
+    if ($NodePathEntries -and $NodePathEntries.Count -gt 0) {
+      $env:NODE_PATH = ($NodePathEntries | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique) -join ';'
+    }
+    Invoke-Checked -FilePath 'node' -Arguments @('-e', $compileScript, $InputFile, $OutputFile, $runtimeKind, $runtimePathArg)
+  }
+  finally {
+    if ($null -eq $previousNodePath) {
+      Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
+    }
+    else {
+      $env:NODE_PATH = $previousNodePath
+    }
+  }
 }
 
 Push-Location $repoRoot
@@ -86,9 +112,13 @@ try {
   $rootEsbuild = Join-Path $repoRoot 'node_modules\.bin\esbuild.cmd'
   $rootObfuscator = Join-Path $repoRoot 'node_modules\.bin\javascript-obfuscator.cmd'
   $electronBuilder = Join-Path $repoRoot 'electron-app\node_modules\.bin\electron-builder.cmd'
+  $electronBinary = Join-Path $repoRoot 'electron-app\node_modules\electron\dist\electron.exe'
+  $rootNodeModules = Join-Path $repoRoot 'node_modules'
+  $electronNodeModules = Join-Path $repoRoot 'electron-app\node_modules'
 
   Ensure-FileExists -Path $rootEsbuild
   Ensure-FileExists -Path $rootObfuscator
+  Ensure-FileExists -Path $electronBinary
   if (-not $SkipElectronBuilder) {
     Ensure-FileExists -Path $electronBuilder
   }
@@ -137,7 +167,7 @@ try {
   )
 
   Write-Step 'Compiling agent bytecode'
-  Invoke-BytenodeCompile -InputFile $agentObf -OutputFile $agentJsc
+  Invoke-BytenodeCompile -InputFile $agentObf -OutputFile $agentJsc -NodePathEntries @($rootNodeModules)
   Write-AsciiFile -Path $agentLoader -Content "require('bytenode');`nrequire('./dsc-agent.jsc');`n"
 
   $electronMainSource = Join-Path $repoRoot 'electron-app\main-bytecode-point.js'
@@ -217,8 +247,8 @@ try {
   }
 
   Write-Step 'Compiling Electron main and PIN prompt bytecode'
-  Invoke-BytenodeCompile -InputFile $electronMainObf -OutputFile (Join-Path $electronRuntimeDir 'main.jsc')
-  Invoke-BytenodeCompile -InputFile $electronPinObf -OutputFile (Join-Path $electronRuntimeDir 'pinPromptServer.jsc')
+  Invoke-BytenodeCompile -InputFile $electronMainObf -OutputFile (Join-Path $electronRuntimeDir 'main.jsc') -Electron -ElectronPath $electronBinary -NodePathEntries @($electronNodeModules, $rootNodeModules)
+  Invoke-BytenodeCompile -InputFile $electronPinObf -OutputFile (Join-Path $electronRuntimeDir 'pinPromptServer.jsc') -Electron -ElectronPath $electronBinary -NodePathEntries @($electronNodeModules, $rootNodeModules)
 
   Write-Step 'Publishing Electron runtime loaders'
   Write-AsciiFile -Path (Join-Path $electronRuntimeDir 'main.loader.js') -Content "require('bytenode');`nrequire('./main.jsc');`n"
