@@ -3,14 +3,12 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 // Local PIN prompt micro-server (for per-sign PIN requests from the agent)
-// const { ensureReady: ensurePinPromptServerReady } = require('./main/pinPromptServer');
 const { ensureReady: ensurePinPromptServerReady } = require('./pinPromptServer.loader.js');
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox');
   app.commandLine.appendSwitch('disable-setuid-sandbox');
 }
-
 
 let tray = null;
 let mainWindow = null;
@@ -40,9 +38,7 @@ function showTrayNotification(title, body) {
     const notification = new Notification({
       title: title || 'DSC Agent',
       body: body || '',
-      // icon: path.join(__dirname, 'assets', 'icon.png')
       icon: path.join(__dirname, '..', '..', 'assets', 'icon.png')
-
     });
     notification.show();
   } catch (err) {
@@ -94,13 +90,9 @@ function getPort(settings) {
 
 function resolveAgentEntry() {
   // Prefer packaged extraResources (../ copied to resources/agent), else parent repo
-  // const packaged = path.join(process.resourcesPath || '', 'agent', 'dsc-agent.js');
-  const packaged =  path.join(process.resourcesPath || '', 'agent', 'dsc-agent.loader.js')
-
+  const packaged = path.join(process.resourcesPath || '', 'agent', 'dsc-agent.loader.js');
   if (fs.existsSync(packaged)) return packaged;
-  // const dev = path.join(__dirname, '..', 'agent', 'dsc-agent.js');
-  const dev = path.join(__dirname, '..', '..', '..', 'dist', 'agent', 'dsc-agent.loader.js')
-
+  const dev = path.join(__dirname, '..', '..', '..', 'dist', 'agent', 'dsc-agent.loader.js');
   return dev;
 }
 
@@ -117,7 +109,7 @@ function resolveNodeBin() {
 }
 
 async function startAgent() {
-  showTrayNotification('DSC Agent', 'Starting…')
+  showTrayNotification('DSC Agent', 'Agent starting...')
   if (agentProc) return;
   stopRequested = false; // clear any previous stop intent
   const agentPath = resolveAgentEntry();
@@ -133,7 +125,7 @@ async function startAgent() {
   LOG(`Starting agent: ${nodeCmd} ${agentPath}`);
   
   try {
-    agentProc = spawn(nodeCmd, [agentPath], { env, windowsHide: true });
+    agentProc = spawn(nodeCmd, [agentPath], { env, windowsHide: true, cwd: path.dirname(path.dirname(agentPath)) });
     agentProc.stdout.on('data', d => { const s = String(d).trim(); if (s) LOG(`[agent] ${s}`); });
     agentProc.stderr.on('data', d => { const s = String(d).trim(); if (s) LOG(`[agent] ${s}`); });
     agentProc.on('exit', (code, signal) => {
@@ -192,15 +184,12 @@ function stopAgent() {
 // app icon path based on platform
 function getAppIcon() {
   if (process.platform === 'win32') {
-    // return path.join(__dirname, 'assets', 'windows', 'icon.ico');
     return path.join(__dirname, '..', '..', 'assets', 'windows', 'icon.ico');
   }
   if (process.platform === 'darwin') {
-    // return path.join(__dirname, 'assets', 'mac', 'icon.icns');
     return path.join(__dirname, '..', '..', 'assets', 'mac', 'icon.icns');
   }
-  // return path.join(__dirname, 'assets', 'icon.png'); // linux
-  return path.join(__dirname, '..', '..', 'assets', 'icon.png');
+  return path.join(__dirname, '..', '..', 'assets', 'icon.png'); // linux
 }
 
 
@@ -216,8 +205,6 @@ function createWindow() {
     show: false,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
-      // preload: path.join(__dirname, 'preload.js'),
-      // preload: path.join(__dirname, 'preload.loader.js'),
       preload: path.join(__dirname, 'preload.obf.js'),
       contextIsolation: true,
       nodeIntegration: false,
@@ -240,9 +227,7 @@ function createWindow() {
       showControlPanel();
     }
   });
-  // mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.loadFile(path.join(__dirname, '..', '..', 'renderer', 'index.html'));
-
   return mainWindow;
 }
 
@@ -283,7 +268,6 @@ function configureAutoLaunch(settings) {
     LOG('[autoLaunch] Configure your desktop environment to start the app at login (see README).');
   }
 }
-
 function updateTrayMenu() {
   if (!tray) return;
   const s = loadSettings();
@@ -377,11 +361,6 @@ function createAppMenu() {
                 const url = `http://127.0.0.1:${getPort(s)}/health`
 
                   const data = await fetchJsonOrError(url)
-                  // dialog.showMessageBox({
-                  //   type: 'info',
-                  //   title: 'Agent Health',
-                  //   message: JSON.stringify(data, null, 2)
-                  // })
                   dialog.showMessageBox({
                     type: data.ok ? 'info' : 'error',
                     title: data.ok ? 'Agent Health' : 'Health Check Failed',
@@ -400,11 +379,6 @@ function createAppMenu() {
                 const url = `http://127.0.0.1:${getPort(s)}/certs`
 
                   const data = await fetchJsonOrError(url)
-                  // dialog.showMessageBox({
-                  //   type: 'info',
-                  //   title: 'Certificates',
-                  //   message: JSON.stringify(data, null, 2)
-                  // })
                   dialog.showMessageBox({
                     type: data.ok ? 'info' : 'error',
                     title: data.ok ? 'Certificates' : 'Certificate Fetch Failed',
@@ -457,12 +431,8 @@ if (!gotTheLock) {
 }
 
 app.on('second-instance', () => {
-  // Someone tried to run a second instance, focus existing one
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-  }
+  // Someone tried to run a second instance - bring control panel to front
+  showControlPanel();
 });
 
 
@@ -475,21 +445,26 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.hide(); } catch {}
   }
-  // const iconPath = path.join(__dirname,'assets','icon.png');
   const iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
-
   
   const icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : undefined;
   tray = new Tray(icon || nativeImage.createEmpty());
   updateTrayMenu();
-  // createWindow();
-  showControlPanel();
+
+  // Open control panel on left-click (Windows/Linux) or double-click
+  tray.on('click', () => showControlPanel());
+  tray.on('double-click', () => showControlPanel());
+
+  // Pre-create the window hidden so the first open is instant
+  createWindow();
+
   const s = loadSettings();
   configureAutoLaunch(s);
   if (s.AUTO_START !== false) { // default true
     startAgent();
   } else {
     LOG('AUTO_START disabled; agent will not start automatically');
+    showTrayNotification('DSC Agent', 'Running in tray. Right-click the tray icon to start the agent.');
   }
 });
 

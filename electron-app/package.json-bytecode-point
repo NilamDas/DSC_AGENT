@@ -51,6 +51,7 @@
         "from": "..",
         "to": "agent",
         "filter": [
+          "dsc-agent.config.json",
           "package.json",
           "package-lock.json",
           "node_modules/**",

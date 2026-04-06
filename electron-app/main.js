@@ -10,7 +10,6 @@ if (process.platform === 'linux') {
   app.commandLine.appendSwitch('disable-setuid-sandbox');
 }
 
-
 let tray = null;
 let mainWindow = null;
 let agentProc = null;
