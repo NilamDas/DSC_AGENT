@@ -6,7 +6,8 @@
    "scripts": {
       "start": "node agent/dsc-agent.js",
       "dev": "node agent/dsc-agent.js",
-      "build:win": "cd electron-app && npm run build"
+      "build:win": "cd electron-app && npm run build",
+      "build:protected": "powershell -ExecutionPolicy Bypass -File .\\build-protected.ps1"
    },
    "dependencies": {
       "@signpdf/placeholder-pdf-lib": "^3.2.6",
