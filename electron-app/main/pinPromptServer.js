@@ -22,6 +22,7 @@ function cryptoRandomToken(len = 32) {
   try { return require('crypto').randomBytes(len).toString('hex'); } catch { return String(Date.now()) + Math.random().toString(16).slice(2); }
 }
 
+
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let data = '';
