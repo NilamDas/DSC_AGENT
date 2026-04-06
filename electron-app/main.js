@@ -110,7 +110,7 @@ function resolveNodeBin() {
 }
 
 async function startAgent() {
-  showTrayNotification('DSC Agent', 'Starting…')
+  showTrayNotification('DSC Agent', 'Agent starting…')
   if (agentProc) return;
   stopRequested = false; // clear any previous stop intent
   const agentPath = resolveAgentEntry();
@@ -442,12 +442,8 @@ if (!gotTheLock) {
 }
 
 app.on('second-instance', () => {
-  // Someone tried to run a second instance, focus existing one
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-  }
+  // Someone tried to run a second instance — bring control panel to front
+  showControlPanel();
 });
 
 
@@ -465,14 +461,21 @@ app.whenReady().then(() => {
   const icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : undefined;
   tray = new Tray(icon || nativeImage.createEmpty());
   updateTrayMenu();
-  // createWindow();
-  showControlPanel();
+
+  // Open control panel on left-click (Windows/Linux) or double-click
+  tray.on('click', () => showControlPanel());
+  tray.on('double-click', () => showControlPanel());
+
+  // Pre-create the window hidden so the first open is instant
+  createWindow();
+
   const s = loadSettings();
   configureAutoLaunch(s);
   if (s.AUTO_START !== false) { // default true
     startAgent();
   } else {
     LOG('AUTO_START disabled; agent will not start automatically');
+    showTrayNotification('DSC Agent', 'Running in tray. Right-click the tray icon to start the agent.');
   }
 });
 

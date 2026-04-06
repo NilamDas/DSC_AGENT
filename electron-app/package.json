@@ -49,6 +49,10 @@
         ]
       },
       {
+        "from": "../dsc-agent.config.json",
+        "to": "dsc-agent.config.json"
+      },
+      {
         "from": "bin/win/",
         "to": "bin/win/",
         "filter": ["**/*"]

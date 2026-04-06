@@ -75,7 +75,14 @@ const TIME_SERVER_TIME_FIELD = cfg.TIME_SERVER_TIME_FIELD;
 const TIME_SERVER_ALLOW_SELF_SIGNED = cfg.TIME_SERVER_ALLOW_SELF_SIGNED;
 
 // Apply time server base URL from config (falls back to default if empty)
-if (TIME_SERVER_URL) timeServerClient.configure({ baseUrl: TIME_SERVER_URL, method: TIME_SERVER_METHOD, timeField: TIME_SERVER_TIME_FIELD, allowSelfSigned: TIME_SERVER_ALLOW_SELF_SIGNED });
+// Always call configure so allowSelfSigned, method, and timeField are applied
+// even when no custom URL is set (falls back to the built-in default URL).
+timeServerClient.configure({
+  ...(TIME_SERVER_URL ? { baseUrl: TIME_SERVER_URL } : {}),
+  method: TIME_SERVER_METHOD,
+  timeField: TIME_SERVER_TIME_FIELD,
+  allowSelfSigned: TIME_SERVER_ALLOW_SELF_SIGNED,
+});
 
 // In-memory session PIN (optional, process-lifetime only)
 let SESSION_PIN = '';
