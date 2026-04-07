@@ -368,13 +368,20 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
         const kidsArr = context.obj([widgetRef]);
         const fieldDict = context.obj({ FT: PDFName.of('Sig'), Kids: kidsArr, T: PDFString.of('Signature1') });
         try {
-          const vMaybe = widget && widget.lookupMaybe ? widget.lookupMaybe(PDFName.of('V')) : null;
-          if (vMaybe) fieldDict.set(PDFName.of('V'), vMaybe);
+          // Use .get() so we copy the raw PDFRef to the signature dict, not the dereferenced dict.
+          // The parent field MUST have /V pointing to the signature dict so Adobe treats it as signed.
+          const vRef = widget && widget.get ? widget.get(PDFName.of('V')) : null;
+          if (vRef) fieldDict.set(PDFName.of('V'), vRef);
         } catch { }
         fieldRef = context.register(fieldDict);
         try { field = context.lookup(fieldRef); } catch { }
         try { kidsArray = field.lookupMaybe ? field.lookupMaybe(PDFName.of('Kids')) : null; } catch { }
         try { if (widget) widget.set(PDFName.of('Parent'), fieldRef); } catch { }
+        // Strip field-level keys from the widget so Adobe doesn't count it as a second signature.
+        try { if (widget && widget.delete) widget.delete(PDFName.of('FT')); } catch { }
+        try { if (widget && widget.delete) widget.delete(PDFName.of('T')); } catch { }
+        try { if (widget && widget.delete) widget.delete(PDFName.of('V')); } catch { }
+        try { if (widget && widget.delete) widget.delete(PDFName.of('Kids')); } catch { }
         fieldRefs[fieldsIndex] = fieldRef;
       } catch { }
     }
@@ -1246,8 +1253,10 @@ async function buildPlaceholderWithVisibleStamp(pdfInputBytes, userName, reason,
         const kidsArr = context.obj([widgetRef]);
         const fieldDict = context.obj({ FT: PDFName.of('Sig'), Kids: kidsArr, T: PDFString.of('Signature1') });
         try {
-          const vMaybe = widget && widget.lookupMaybe ? widget.lookupMaybe(PDFName.of('V')) : null;
-          if (vMaybe) fieldDict.set(PDFName.of('V'), vMaybe);
+          // Use .get() so we copy the raw PDFRef to the signature dict, not the dereferenced dict.
+          // The parent field MUST have /V pointing to the signature dict so Adobe treats it as signed.
+          const vRef = widget && widget.get ? widget.get(PDFName.of('V')) : null;
+          if (vRef) fieldDict.set(PDFName.of('V'), vRef);
         } catch { }
         fieldRef = context.register(fieldDict);
         try { field = context.lookup(fieldRef); } catch { }
@@ -1296,6 +1305,15 @@ async function buildPlaceholderWithVisibleStamp(pdfInputBytes, userName, reason,
         if (!has) kids.push(widgetRef);
       }
     } catch { }
+
+    // Strip field-level keys from the widget annotation so Adobe Reader does not treat it as
+    // a second independent signature field. /FT, /T, /V and /Kids belong only on the parent.
+    if (!pdfRefEquals(widgetRef, fieldRef)) {
+      try { if (widget && widget.delete) widget.delete(PDFName.of('FT')); } catch { }
+      try { if (widget && widget.delete) widget.delete(PDFName.of('T')); } catch { }
+      try { if (widget && widget.delete) widget.delete(PDFName.of('V')); } catch { }
+      try { if (widget && widget.delete) widget.delete(PDFName.of('Kids')); } catch { }
+    }
 
     // Apply rect override
     if (rectOverride) {
@@ -1403,11 +1421,13 @@ async function buildPlaceholderWithVisibleStamp(pdfInputBytes, userName, reason,
           // Filter out any accidental fieldRef entries and any existing widgetRef on non-target pages
           const filtered = [];
           for (const r of arr) {
-            if (r === fieldRef) continue; // never keep field as annot
-            if (i !== tIndex && r === widgetRef) continue; // drop widget from non-target pages
+            if (pdfRefEquals(r, fieldRef)) continue; // never keep field as annot
+            if (i !== tIndex && pdfRefEquals(r, widgetRef)) continue; // drop widget from non-target pages
             filtered.push(r);
           }
-          if (i === tIndex && widgetRef) filtered.push(widgetRef); // ensure present on target page
+          // Only add widgetRef to the target page if it is not already present (prevents duplicates).
+          const widgetAlreadyPresent = filtered.some(r => pdfRefEquals(r, widgetRef));
+          if (i === tIndex && widgetRef && !widgetAlreadyPresent) filtered.push(widgetRef);
           if (filtered.length) pg.node.set(PDFName.of('Annots'), pdfDoc2.context.obj(filtered));
           else { try { pg.node.delete && pg.node.delete(PDFName.of('Annots')); } catch { } }
         } catch { }
@@ -1421,7 +1441,7 @@ async function buildPlaceholderWithVisibleStamp(pdfInputBytes, userName, reason,
           else if (annT.array) { for (const r of annT.array) items.push(r); }
         }
         let presentT = false;
-        for (const r of items) { if (r === widgetRef) { presentT = true; break; } }
+        for (const r of items) { if (pdfRefEquals(r, widgetRef)) { presentT = true; break; } }
         if (!presentT && widgetRef) {
           items.push(widgetRef);
           targetPage.node.set(PDFName.of('Annots'), pdfDoc2.context.obj(items));
