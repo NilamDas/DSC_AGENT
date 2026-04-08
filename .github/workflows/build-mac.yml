@@ -6,6 +6,10 @@ on:
     tags:
       - 'v*'           # also runs automatically on any version tag e.g. v1.0.0
 
+env:
+  # Opt into Node.js 24 for the action runners (fixes the Node 20 deprecation warning)
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-mac:
     runs-on: macos-latest
@@ -19,22 +23,150 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
-          cache-dependency-path: electron-app/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            electron-app/package-lock.json
 
-      - name: Install root dependencies (agent)
+      - name: Install root dependencies
         run: npm ci
-        working-directory: .
 
       - name: Install electron-app dependencies
         run: npm ci
         working-directory: electron-app
 
-      - name: Build macOS app
-        run: npm run build:mac
-        working-directory: electron-app
+      # ─── Prepare output directories ────────────────────────────────────
+      - name: Prepare output directories
+        run: |
+          mkdir -p build-artifacts
+          mkdir -p dist/agent
+          mkdir -p electron-app/build-artifacts
+          mkdir -p electron-app/runtime/electron
+
+      # ─── Agent: bundle → obfuscate → bytecode ─────────────────────────
+      - name: Bundle agent
+        run: |
+          node_modules/.bin/esbuild agent/dsc-agent.js \
+            --bundle --platform=node --format=cjs --target=node18 \
+            --external:pkcs11js \
+            --outfile=build-artifacts/dsc-agent.bundle.js
+
+      - name: Obfuscate agent
+        run: |
+          node_modules/.bin/javascript-obfuscator build-artifacts/dsc-agent.bundle.js \
+            --output build-artifacts/dsc-agent.obf.js \
+            --target node --compact true \
+            --identifier-names-generator hexadecimal \
+            --rename-globals false --simplify true \
+            --string-array true --string-array-encoding base64 \
+            --string-array-threshold 0.75 \
+            --unicode-escape-sequence false
+
+      - name: Compile agent bytecode
+        run: |
+          NODE_PATH="${GITHUB_WORKSPACE}/node_modules" node -e "
+            const b = require('bytenode');
+            const fs = require('fs');
+            b.compileFile({
+              filename: 'build-artifacts/dsc-agent.obf.js',
+              output: 'dist/agent/dsc-agent.jsc'
+            }).then(() => {
+              fs.writeFileSync('dist/agent/dsc-agent.loader.js',
+                \"require('bytenode');\\nrequire('./dsc-agent.jsc');\\n\", 'ascii');
+              console.log('agent bytecode ok');
+            }).catch(e => { console.error(e); process.exit(1); });
+          "
+
+      # ─── Electron: bundle → obfuscate → bytecode ──────────────────────
+      - name: Stage bytecode-safe PIN prompt source
+        run: |
+          node -e "
+            const fs = require('fs');
+            let src = fs.readFileSync('electron-app/main/pinPromptServer.js', 'utf8');
+            src = src.replace(
+              \"require('path').join(__dirname, '..', 'renderer', 'pin.html')\",
+              \"require('path').join(__dirname, '..', '..', 'renderer', 'pin.html')\"
+            );
+            fs.writeFileSync(
+              'electron-app/build-artifacts/pinPromptServer.bytecode-point.js', src, 'ascii');
+          "
+
+      - name: Bundle Electron files
+        run: |
+          node_modules/.bin/esbuild electron-app/main-bytecode-point.js \
+            --bundle --platform=node --format=cjs --target=node18 \
+            --external:electron \
+            '--external:./pinPromptServer.loader.js' \
+            --outfile=electron-app/build-artifacts/main.bundle.js
+
+          node_modules/.bin/esbuild \
+            electron-app/build-artifacts/pinPromptServer.bytecode-point.js \
+            --bundle --platform=node --format=cjs --target=node18 \
+            --external:electron \
+            --outfile=electron-app/build-artifacts/pinPromptServer.bundle.js
+
+          node_modules/.bin/esbuild electron-app/preload.js \
+            --bundle --platform=node --format=cjs --target=node18 \
+            --external:electron \
+            --outfile=electron-app/build-artifacts/preload.bundle.js
+
+      - name: Obfuscate Electron files
+        run: |
+          for module in main pinPromptServer preload; do
+            node_modules/.bin/javascript-obfuscator \
+              "electron-app/build-artifacts/${module}.bundle.js" \
+              --output "electron-app/build-artifacts/${module}.obf.js" \
+              --target node --compact true \
+              --identifier-names-generator hexadecimal \
+              --rename-globals false --simplify true \
+              --string-array true --string-array-encoding base64 \
+              --string-array-threshold 0.75 \
+              --unicode-escape-sequence false
+          done
+
+      - name: Resolve Electron binary path
+        run: |
+          ELECTRON_PATH=$(cd electron-app && node -e "console.log(require('electron'))")
+          echo "ELECTRON_PATH=${ELECTRON_PATH}" >> "$GITHUB_ENV"
+          echo "Electron binary: ${ELECTRON_PATH}"
+
+      - name: Compile Electron bytecode
+        run: |
+          NODE_PATH="${GITHUB_WORKSPACE}/electron-app/node_modules:${GITHUB_WORKSPACE}/node_modules" \
+          node -e "
+            const b = require('bytenode');
+            const fs = require('fs');
+            const electronPath = process.env.ELECTRON_PATH;
+            const compile = (input, output) =>
+              b.compileFile({ filename: input, output, electron: true, electronPath });
+            Promise.all([
+              compile(
+                'electron-app/build-artifacts/main.obf.js',
+                'electron-app/runtime/electron/main.jsc'
+              ),
+              compile(
+                'electron-app/build-artifacts/pinPromptServer.obf.js',
+                'electron-app/runtime/electron/pinPromptServer.jsc'
+              ),
+            ]).then(() => {
+              fs.writeFileSync('electron-app/runtime/electron/main.loader.js',
+                \"require('bytenode');\\nrequire('./main.jsc');\\n\", 'ascii');
+              fs.writeFileSync('electron-app/runtime/electron/pinPromptServer.loader.js',
+                \"require('bytenode');\\nmodule.exports = require('./pinPromptServer.jsc');\\n\", 'ascii');
+              fs.copyFileSync(
+                'electron-app/build-artifacts/preload.obf.js',
+                'electron-app/runtime/electron/preload.obf.js');
+              console.log('Electron bytecode ok');
+            }).catch(e => { console.error(e); process.exit(1); });
+          "
+
+      # ─── electron-builder: swap package.json and build ────────────────
+      - name: Build macOS app (protected)
+        run: |
+          cp electron-app/package.json electron-app/package.json.bak
+          cp electron-app/package.json-bytecode-point electron-app/package.json
+          cd electron-app && npm run build:mac || { cp package.json.bak package.json; exit 1; }
+          cp electron-app/package.json.bak electron-app/package.json
         env:
-          # Disable code signing — remove these two lines if you have an Apple
-          # Developer certificate configured in GitHub secrets.
           CSC_IDENTITY_AUTO_DISCOVERY: false
           CSC_LINK: ''
 
@@ -47,3 +179,4 @@ jobs:
             electron-app/dist/*.zip
           if-no-files-found: error
           retention-days: 30
+

@@ -32,6 +32,7 @@
   "build": {
     "appId": "com.example.dscagent",
     "productName": "DSC Agent",
+    "afterPack": "scripts/apply-fuses.js",
     "files": [
       "package.json",
       "runtime/electron/**",
