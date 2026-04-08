@@ -1,0 +1,49 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:   # run manually from the GitHub Actions tab
+  push:
+    tags:
+      - 'v*'           # also runs automatically on any version tag e.g. v1.0.0
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: electron-app/package-lock.json
+
+      - name: Install root dependencies (agent)
+        run: npm ci
+        working-directory: .
+
+      - name: Install electron-app dependencies
+        run: npm ci
+        working-directory: electron-app
+
+      - name: Build macOS app
+        run: npm run build:mac
+        working-directory: electron-app
+        env:
+          # Disable code signing — remove these two lines if you have an Apple
+          # Developer certificate configured in GitHub secrets.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          CSC_LINK: ''
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSC-Agent-macOS
+          path: |
+            electron-app/dist/*.dmg
+            electron-app/dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
