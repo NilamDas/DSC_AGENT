@@ -161,7 +161,7 @@ jobs:
       - name: Build macOS app (protected)
         run: |
           cp electron-app/package.json-bytecode-point electron-app/package.json
-          npm run build:mac --prefix electron-app
+          npm run build:mac --prefix electron-app -- --x64 --arm64
           git checkout -- electron-app/package.json
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false

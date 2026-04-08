@@ -92,7 +92,11 @@
     "mac": {
       "icon": "assets/mac/icon.icns",
       "category": "public.app-category.business",
-      "identity": null
+      "identity": null,
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] },
+        { "target": "zip", "arch": ["x64", "arm64"] }
+      ]
     },
     "linux": {
       "icon": "assets/icon.png",
