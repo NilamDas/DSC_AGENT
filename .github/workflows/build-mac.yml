@@ -162,8 +162,9 @@ jobs:
         run: |
           cp electron-app/package.json electron-app/package.json.bak
           cp electron-app/package.json-bytecode-point electron-app/package.json
-          cd electron-app && npm run build:mac || { cp package.json.bak package.json; exit 1; }
+          npm run build:mac --prefix electron-app || { cp electron-app/package.json.bak electron-app/package.json; exit 1; }
           cp electron-app/package.json.bak electron-app/package.json
+        working-directory: electron-app/..
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
