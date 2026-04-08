@@ -166,7 +166,6 @@ jobs:
           cp electron-app/package.json.bak electron-app/package.json
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-          CSC_LINK: ''
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
