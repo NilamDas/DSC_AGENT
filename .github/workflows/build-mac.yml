@@ -160,11 +160,9 @@ jobs:
       # ─── electron-builder: swap package.json and build ────────────────
       - name: Build macOS app (protected)
         run: |
-          cp electron-app/package.json electron-app/package.json.bak
           cp electron-app/package.json-bytecode-point electron-app/package.json
-          npm run build:mac --prefix electron-app || { cp electron-app/package.json.bak electron-app/package.json; exit 1; }
-          cp electron-app/package.json.bak electron-app/package.json
-        working-directory: electron-app/..
+          npm run build:mac --prefix electron-app
+          git checkout -- electron-app/package.json
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
