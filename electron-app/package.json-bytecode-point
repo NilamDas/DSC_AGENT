@@ -45,7 +45,8 @@
         "to": "agent",
         "filter": [
           "dsc-agent.loader.js",
-          "dsc-agent.jsc"
+          "dsc-agent.jsc",
+          "dsc-agent.obf.js"
         ]
       },
       {

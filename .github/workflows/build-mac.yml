@@ -59,20 +59,14 @@ jobs:
             --string-array-threshold 0.75 \
             --unicode-escape-sequence false
 
-      - name: Compile agent bytecode
+      # Mac: ship the obfuscated JS directly — V8 bytecode is arch-specific
+      # (arm64 .jsc won't load on x64 Electron) so we use the obf.js as-is.
+      - name: Set up agent runtime files (obf.js)
         run: |
-          NODE_PATH="${GITHUB_WORKSPACE}/node_modules" node -e "
-            const b = require('bytenode');
-            const fs = require('fs');
-            b.compileFile({
-              filename: 'build-artifacts/dsc-agent.obf.js',
-              output: 'dist/agent/dsc-agent.jsc'
-            }).then(() => {
-              fs.writeFileSync('dist/agent/dsc-agent.loader.js',
-                \"require('bytenode');\\nrequire('./dsc-agent.jsc');\\n\", 'ascii');
-              console.log('agent bytecode ok');
-            }).catch(e => { console.error(e); process.exit(1); });
-          "
+          mkdir -p dist/agent
+          cp build-artifacts/dsc-agent.obf.js dist/agent/dsc-agent.obf.js
+          printf "require('./dsc-agent.obf.js');\n" > dist/agent/dsc-agent.loader.js
+          echo "Agent runtime files ready"
 
       # ─── Electron: bundle → obfuscate → bytecode ──────────────────────
       - name: Stage bytecode-safe PIN prompt source
@@ -121,41 +115,41 @@ jobs:
               --unicode-escape-sequence false
           done
 
-      - name: Resolve Electron binary path
+      # Mac: use obf.js directly — no arch-specific bytecode needed.
+      - name: Set up Electron runtime files (obf.js)
         run: |
-          ELECTRON_PATH=$(cd electron-app && node -e "console.log(require('electron'))")
-          echo "ELECTRON_PATH=${ELECTRON_PATH}" >> "$GITHUB_ENV"
-          echo "Electron binary: ${ELECTRON_PATH}"
+          mkdir -p electron-app/runtime/electron
+          cp electron-app/build-artifacts/main.obf.js           electron-app/runtime/electron/main.obf.js
+          cp electron-app/build-artifacts/pinPromptServer.obf.js electron-app/runtime/electron/pinPromptServer.obf.js
+          cp electron-app/build-artifacts/preload.obf.js         electron-app/runtime/electron/preload.obf.js
+          printf "require('./main.obf.js');\n"                   > electron-app/runtime/electron/main.loader.js
+          printf "module.exports = require('./pinPromptServer.obf.js');\n" > electron-app/runtime/electron/pinPromptServer.loader.js
+          echo "Electron runtime files ready"
 
-      - name: Compile Electron bytecode
+      # ─── Bundle Node binary for macOS (universal: arm64 + x64) ────────
+      # Required because the packaged app spawns a separate Node process to
+      # run the agent. bin/mac is gitignored so we build it in CI.
+      - name: Bundle universal Node binary for macOS
         run: |
-          NODE_PATH="${GITHUB_WORKSPACE}/electron-app/node_modules:${GITHUB_WORKSPACE}/node_modules" \
-          node -e "
-            const b = require('bytenode');
-            const fs = require('fs');
-            const electronPath = process.env.ELECTRON_PATH;
-            const compile = (input, output) =>
-              b.compileFile({ filename: input, output, electron: true, electronPath });
-            Promise.all([
-              compile(
-                'electron-app/build-artifacts/main.obf.js',
-                'electron-app/runtime/electron/main.jsc'
-              ),
-              compile(
-                'electron-app/build-artifacts/pinPromptServer.obf.js',
-                'electron-app/runtime/electron/pinPromptServer.jsc'
-              ),
-            ]).then(() => {
-              fs.writeFileSync('electron-app/runtime/electron/main.loader.js',
-                \"require('bytenode');\\nrequire('./main.jsc');\\n\", 'ascii');
-              fs.writeFileSync('electron-app/runtime/electron/pinPromptServer.loader.js',
-                \"require('bytenode');\\nmodule.exports = require('./pinPromptServer.jsc');\\n\", 'ascii');
-              fs.copyFileSync(
-                'electron-app/build-artifacts/preload.obf.js',
-                'electron-app/runtime/electron/preload.obf.js');
-              console.log('Electron bytecode ok');
-            }).catch(e => { console.error(e); process.exit(1); });
-          "
+          NODE_VERSION="20.19.0"
+          mkdir -p /tmp/node-bins electron-app/bin/mac
+
+          echo "Downloading arm64 Node..."
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-arm64.tar.gz" \
+            | tar xz -C /tmp/node-bins
+
+          echo "Downloading x64 Node..."
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-x64.tar.gz" \
+            | tar xz -C /tmp/node-bins
+
+          echo "Creating universal binary with lipo..."
+          lipo -create \
+            "/tmp/node-bins/node-v${NODE_VERSION}-darwin-arm64/bin/node" \
+            "/tmp/node-bins/node-v${NODE_VERSION}-darwin-x64/bin/node" \
+            -output electron-app/bin/mac/node
+
+          chmod +x electron-app/bin/mac/node
+          echo "Node universal binary ready: $(file electron-app/bin/mac/node)"
 
       # ─── electron-builder: swap package.json and build ────────────────
       - name: Build macOS app (protected)
