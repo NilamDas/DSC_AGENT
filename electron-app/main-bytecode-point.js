@@ -445,10 +445,21 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.hide(); } catch {}
   }
-  const iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
-  
-  const icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : undefined;
-  tray = new Tray(icon || nativeImage.createEmpty());
+
+  let iconPath;
+  if (process.platform === 'darwin') {
+    const templatePath = path.join(__dirname, '..', '..', 'assets', 'Mac', 'iconTemplate.png');
+    const fallbackPath = path.join(__dirname, '..', '..', 'assets', 'Mac', 'icon-16x16.png');
+    iconPath = fs.existsSync(templatePath) ? templatePath : fallbackPath;
+  } else {
+    iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
+  }
+
+  let icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  if (process.platform === 'darwin') {
+    icon.setTemplateImage(true);
+  }
+  tray = new Tray(icon);
   updateTrayMenu();
 
   // Open control panel on left-click (Windows/Linux) or double-click
