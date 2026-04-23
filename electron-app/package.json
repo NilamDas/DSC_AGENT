@@ -98,11 +98,11 @@
       ]
     },
     "mac": {
-      "icon": "assets/mac/icon.icns",
+      "icon": "assets/Mac/icon.png",
       "category": "public.app-category.business"
     },
     "linux": {
-      "icon": "assets/icon.png",
+      "icon": "assets/linux/icon.png",
       "target": [
         "AppImage",
         "deb",
