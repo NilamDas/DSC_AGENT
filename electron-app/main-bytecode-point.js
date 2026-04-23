@@ -445,10 +445,21 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.hide(); } catch {}
   }
-  const iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
-  
-  const icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : undefined;
-  tray = new Tray(icon || nativeImage.createEmpty());
+
+  let iconPath;
+  if (process.platform === 'darwin') {
+    const templatePath = path.join(__dirname, '..', '..', 'assets', 'Mac', 'iconTemplate.png');
+    const fallbackPath = path.join(__dirname, '..', '..', 'assets', 'Mac', 'icon-16x16.png');
+    iconPath = fs.existsSync(templatePath) ? templatePath : fallbackPath;
+  } else {
+    iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
+  }
+
+  let icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  if (process.platform === 'darwin') {
+    icon.setTemplateImage(true);
+  }
+  tray = new Tray(icon);
   updateTrayMenu();
 
   // Open control panel on left-click (Windows/Linux) or double-click
@@ -469,8 +480,10 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', (e) => {
-  // Keep running in tray
-  e.preventDefault();
+  if (!isQuitting) {
+    // Keep running in tray
+    e.preventDefault();
+  }
 });
 
 app.on('activate', () => {
@@ -479,7 +492,30 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
-  stopAgent();
+  // Forcefully kill the agent child process synchronously so no orphan remains
+  if (agentProc) {
+    const pid = agentProc.pid;
+    try { agentProc.kill(); } catch {}
+    if (process.platform === 'win32' && pid) {
+      try {
+        require('child_process').spawnSync(
+          'taskkill', ['/PID', String(pid), '/T', '/F'],
+          { windowsHide: true }
+        );
+      } catch {}
+    }
+    agentProc = null;
+  }
+  stopRequested = true;
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+});
+
+app.on('will-quit', () => {
+  // Failsafe: if HTTP servers or timers keep the process alive, force-exit
+  setTimeout(() => process.exit(0), 500);
 });
 
 // IPC

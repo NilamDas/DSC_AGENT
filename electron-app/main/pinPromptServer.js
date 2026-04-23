@@ -2,6 +2,20 @@ const { BrowserWindow, ipcMain, app } = require('electron');
 const http = require('http');
 
 let pinPrompt = { server: null, port: null, token: null, ready: null, busy: false, win: null, busyTimer: null };
+let isAppQuitting = false;
+app.on('before-quit', () => {
+  isAppQuitting = true;
+  // Destroy pin window so window-all-closed can fire and app can fully exit
+  if (pinPrompt.win && !pinPrompt.win.isDestroyed()) {
+    try { pinPrompt.win.destroy(); } catch {}
+    pinPrompt.win = null;
+  }
+  // Close HTTP server so it doesn't hold the event loop open
+  if (pinPrompt.server) {
+    try { pinPrompt.server.close(); } catch {}
+    pinPrompt.server = null;
+  }
+});
 
 // Set/clear busy with a 90-second safety auto-reset so one bad cycle never
 // leaves the flag permanently true.
@@ -73,7 +87,9 @@ function prewarmPinWindow() {
     w.once('ready-to-show', () => { try { w.center(); } catch {} });
     // Intercept the close event (Alt-F4, window X button) — hide and cancel
     // instead of destroying so the window stays pre-warmed for next time.
+    // During app quit, allow the window to actually close.
     w.on('close', (e) => {
+      if (isAppQuitting) return; // let it close so app can fully exit
       e.preventDefault();
       try { w.setSkipTaskbar(true); } catch {}
       try { w.hide(); } catch {}
