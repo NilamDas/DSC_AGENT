@@ -21,6 +21,12 @@ ipcRenderer.on('pin:focus', () => {
   if (el) { try { el.focus(); el.select(); } catch {} }
 });
 
+// Clear the input field before the window is shown for a new request.
+ipcRenderer.on('pin:reset', () => {
+  const el = $('pin');
+  if (el) { el.value = ''; try { el.focus(); } catch {} }
+});
+
 $('btn-ok').addEventListener('click', () => {
   const v = $('pin').value || '';
   ipcRenderer.send('pin:submit', v);

@@ -89,21 +89,34 @@ function getPort(settings) {
 }
 
 function resolveAgentEntry() {
-  // Prefer packaged extraResources (../ copied to resources/agent), else parent repo
-  const packaged = path.join(process.resourcesPath || '', 'agent', 'dsc-agent.loader.js');
-  if (fs.existsSync(packaged)) return packaged;
+  if (app.isPackaged) {
+    const packaged = path.join(process.resourcesPath || '', 'agent', 'dsc-agent.loader.js');
+    if (!fs.existsSync(packaged)) {
+      throw new Error(`Packaged agent entry not found: ${packaged}`);
+    }
+    return packaged;
+  }
+
   const dev = path.join(__dirname, '..', '..', '..', 'dist', 'agent', 'dsc-agent.loader.js');
+  if (!fs.existsSync(dev)) {
+    throw new Error(`Development agent entry not found: ${dev}`);
+  }
   return dev;
 }
 
 function resolveNodeBin() {
-  // Prefer a bundled Node runtime if present under resources/bin/<platform>/
   const res = process.resourcesPath || '';
   const plat = process.platform;
   let candidate;
   if (plat === 'win32') candidate = path.join(res, 'bin', 'win', 'node.exe');
   else if (plat === 'darwin') candidate = path.join(res, 'bin', 'mac', 'node');
   else candidate = path.join(res, 'bin', 'linux', 'node');
+
+  if (app.isPackaged) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+    throw new Error(`Bundled Node runtime not found: ${candidate}`);
+  }
+
   if (candidate && fs.existsSync(candidate)) return candidate;
   return process.env.DSC_NODE_PATH || 'node';
 }
@@ -445,10 +458,21 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.hide(); } catch {}
   }
-  const iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
-  
-  const icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : undefined;
-  tray = new Tray(icon || nativeImage.createEmpty());
+
+  let iconPath;
+  if (process.platform === 'darwin') {
+    const templatePath = path.join(__dirname, '..', '..', 'assets', 'Mac', 'iconTemplate.png');
+    const fallbackPath = path.join(__dirname, '..', '..', 'assets', 'Mac', 'icon-16x16.png');
+    iconPath = fs.existsSync(templatePath) ? templatePath : fallbackPath;
+  } else {
+    iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
+  }
+
+  let icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  if (process.platform === 'darwin') {
+    icon.setTemplateImage(true);
+  }
+  tray = new Tray(icon);
   updateTrayMenu();
 
   // Open control panel on left-click (Windows/Linux) or double-click
@@ -469,8 +493,10 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', (e) => {
-  // Keep running in tray
-  e.preventDefault();
+  if (!isQuitting) {
+    // Keep running in tray
+    e.preventDefault();
+  }
 });
 
 app.on('activate', () => {
@@ -479,7 +505,30 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
-  stopAgent();
+  // Forcefully kill the agent child process synchronously so no orphan remains
+  if (agentProc) {
+    const pid = agentProc.pid;
+    try { agentProc.kill(); } catch {}
+    if (process.platform === 'win32' && pid) {
+      try {
+        require('child_process').spawnSync(
+          'taskkill', ['/PID', String(pid), '/T', '/F'],
+          { windowsHide: true }
+        );
+      } catch {}
+    }
+    agentProc = null;
+  }
+  stopRequested = true;
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+});
+
+app.on('will-quit', () => {
+  // Failsafe: if HTTP servers or timers keep the process alive, force-exit
+  setTimeout(() => process.exit(0), 500);
 });
 
 // IPC

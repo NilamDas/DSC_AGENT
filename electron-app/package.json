@@ -1,6 +1,6 @@
 {
   "name": "dsc-agent-electron",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tray UI to control dsc-agent.js (non-destructive)",
   "main": "main.js",
   "private": true,
@@ -13,29 +13,44 @@
   "homepage": "https://example.com/dsc-agent",
   "icon": "assets/icon.png",
   "scripts": {
-  "dev": "electron .",
-  "electron": "electron .",
-  "build": "electron-builder",
-  "build:win": "electron-builder --win",
-  "build:mac": "electron-builder --mac",
-  "build:linux": "electron-builder --linux"
+    "dev": "electron .",
+    "electron": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
   },
-  "dependencies": {},
   "devDependencies": {
+    "@electron/fuses": "^2.1.1",
     "electron": "^29.3.0",
     "electron-builder": "^24.13.3"
   },
   "build": {
     "appId": "com.example.dscagent",
     "productName": "DSC Agent",
+    "afterPack": "scripts/apply-fuses.js",
     "files": [
-      "**/*"
+      "**/*",
+      "!build-artifacts/**"
     ],
     "extraResources": [
       {
         "from": "../agent",
         "to": "agent",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*",
+          "!dsc-agent.js",
+          "!dsc-agent_09_10.js",
+          "!dsc-agent-all-working.js",
+          "!dsc-agent - batch working.js",
+          "!agen_backeup/**",
+          "!lib/**",
+          "!services/**"
+        ]
+      },
+      {
+        "from": "../build-artifacts/dsc-agent.obf.js",
+        "to": "agent/dsc-agent.js"
       },
       {
         "from": "..",
@@ -56,30 +71,43 @@
       {
         "from": "bin/win/",
         "to": "bin/win/",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "bin/mac/",
         "to": "bin/mac/",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "bin/linux/",
         "to": "bin/linux/",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
       "icon": "assets/windows/icon.ico",
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "mac": {
-      "icon": "assets/mac/icon.icns",
+      "icon": "assets/Mac/icon.png",
       "category": "public.app-category.business"
     },
     "linux": {
-      "icon": "assets/icon.png",
-      "target": ["AppImage", "deb", "rpm"],
+      "icon": "assets/linux/icon.png",
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
       "maintainer": "DSC Agent <support@example.com>"
     }
   }

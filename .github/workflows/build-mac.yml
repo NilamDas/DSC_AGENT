@@ -1,0 +1,172 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:   # run manually from the GitHub Actions tab
+  push:
+    tags:
+      - 'v*'           # also runs automatically on any version tag e.g. v1.0.0
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            electron-app/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install electron-app dependencies
+        run: npm ci
+        working-directory: electron-app
+
+      # ─── Prepare output directories ────────────────────────────────────
+      - name: Prepare output directories
+        run: |
+          mkdir -p build-artifacts
+          mkdir -p dist/agent
+          mkdir -p electron-app/build-artifacts
+          mkdir -p electron-app/runtime/electron
+
+      # ─── Agent: bundle → obfuscate → bytecode ─────────────────────────
+      - name: Bundle agent
+        run: |
+          node_modules/.bin/esbuild agent/dsc-agent.js \
+            --bundle --platform=node --format=cjs --target=node18 \
+            --external:pkcs11js \
+            --outfile=build-artifacts/dsc-agent.bundle.js
+
+      - name: Obfuscate agent
+        run: |
+          node_modules/.bin/javascript-obfuscator build-artifacts/dsc-agent.bundle.js \
+            --output build-artifacts/dsc-agent.obf.js \
+            --target node --compact true \
+            --identifier-names-generator hexadecimal \
+            --rename-globals false --simplify true \
+            --string-array true --string-array-encoding base64 \
+            --string-array-threshold 0.75 \
+            --unicode-escape-sequence false
+
+      # Mac: ship the obfuscated JS directly — V8 bytecode is arch-specific
+      # (arm64 .jsc won't load on x64 Electron) so we use the obf.js as-is.
+      - name: Set up agent runtime files (obf.js)
+        run: |
+          mkdir -p dist/agent
+          cp build-artifacts/dsc-agent.obf.js dist/agent/dsc-agent.obf.js
+          printf "require('./dsc-agent.obf.js');\n" > dist/agent/dsc-agent.loader.js
+          echo "Agent runtime files ready"
+
+      # ─── Electron: bundle → obfuscate → bytecode ──────────────────────
+      - name: Stage bytecode-safe PIN prompt source
+        run: |
+          node -e "
+            const fs = require('fs');
+            let src = fs.readFileSync('electron-app/main/pinPromptServer.js', 'utf8');
+            src = src.replace(
+              \"require('path').join(__dirname, '..', 'renderer', 'pin.html')\",
+              \"require('path').join(__dirname, '..', '..', 'renderer', 'pin.html')\"
+            );
+            fs.writeFileSync(
+              'electron-app/build-artifacts/pinPromptServer.bytecode-point.js', src, 'ascii');
+          "
+
+      - name: Bundle Electron files
+        run: |
+          node_modules/.bin/esbuild electron-app/main-bytecode-point.js \
+            --bundle --platform=node --format=cjs --target=node18 \
+            --external:electron \
+            '--external:./pinPromptServer.loader.js' \
+            --outfile=electron-app/build-artifacts/main.bundle.js
+
+          node_modules/.bin/esbuild \
+            electron-app/build-artifacts/pinPromptServer.bytecode-point.js \
+            --bundle --platform=node --format=cjs --target=node18 \
+            --external:electron \
+            --outfile=electron-app/build-artifacts/pinPromptServer.bundle.js
+
+          node_modules/.bin/esbuild electron-app/preload.js \
+            --bundle --platform=node --format=cjs --target=node18 \
+            --external:electron \
+            --outfile=electron-app/build-artifacts/preload.bundle.js
+
+      - name: Obfuscate Electron files
+        run: |
+          for module in main pinPromptServer preload; do
+            node_modules/.bin/javascript-obfuscator \
+              "electron-app/build-artifacts/${module}.bundle.js" \
+              --output "electron-app/build-artifacts/${module}.obf.js" \
+              --target node --compact true \
+              --identifier-names-generator hexadecimal \
+              --rename-globals false --simplify true \
+              --string-array true --string-array-encoding base64 \
+              --string-array-threshold 0.75 \
+              --unicode-escape-sequence false
+          done
+
+      # Mac: use obf.js directly — no arch-specific bytecode needed.
+      - name: Set up Electron runtime files (obf.js)
+        run: |
+          mkdir -p electron-app/runtime/electron
+          cp electron-app/build-artifacts/main.obf.js           electron-app/runtime/electron/main.obf.js
+          cp electron-app/build-artifacts/pinPromptServer.obf.js electron-app/runtime/electron/pinPromptServer.obf.js
+          cp electron-app/build-artifacts/preload.obf.js         electron-app/runtime/electron/preload.obf.js
+          printf "require('./main.obf.js');\n"                   > electron-app/runtime/electron/main.loader.js
+          printf "module.exports = require('./pinPromptServer.obf.js');\n" > electron-app/runtime/electron/pinPromptServer.loader.js
+          echo "Electron runtime files ready"
+
+      # ─── Bundle Node binary for macOS (universal: arm64 + x64) ────────
+      # Required because the packaged app spawns a separate Node process to
+      # run the agent. bin/mac is gitignored so we build it in CI.
+      - name: Bundle universal Node binary for macOS
+        run: |
+          NODE_VERSION="20.19.0"
+          mkdir -p /tmp/node-bins electron-app/bin/mac
+
+          echo "Downloading arm64 Node..."
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-arm64.tar.gz" \
+            | tar xz -C /tmp/node-bins
+
+          echo "Downloading x64 Node..."
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-x64.tar.gz" \
+            | tar xz -C /tmp/node-bins
+
+          echo "Creating universal binary with lipo..."
+          lipo -create \
+            "/tmp/node-bins/node-v${NODE_VERSION}-darwin-arm64/bin/node" \
+            "/tmp/node-bins/node-v${NODE_VERSION}-darwin-x64/bin/node" \
+            -output electron-app/bin/mac/node
+
+          chmod +x electron-app/bin/mac/node
+          echo "Node universal binary ready: $(file electron-app/bin/mac/node)"
+
+      # ─── electron-builder: swap package.json and build ────────────────
+      - name: Build macOS app (protected)
+        run: |
+          cp electron-app/package.json-bytecode-point electron-app/package.json
+          npm run build:mac --prefix electron-app -- --x64 --arm64
+          git checkout -- electron-app/package.json
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSC-Agent-macOS
+          path: |
+            electron-app/dist/*.dmg
+            electron-app/dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+

@@ -368,13 +368,20 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
         const kidsArr = context.obj([widgetRef]);
         const fieldDict = context.obj({ FT: PDFName.of('Sig'), Kids: kidsArr, T: PDFString.of('Signature1') });
         try {
-          const vMaybe = widget && widget.lookupMaybe ? widget.lookupMaybe(PDFName.of('V')) : null;
-          if (vMaybe) fieldDict.set(PDFName.of('V'), vMaybe);
+          // Use .get() so we copy the raw PDFRef to the signature dict, not the dereferenced dict.
+          // The parent field MUST have /V pointing to the signature dict so Adobe treats it as signed.
+          const vRef = widget && widget.get ? widget.get(PDFName.of('V')) : null;
+          if (vRef) fieldDict.set(PDFName.of('V'), vRef);
         } catch { }
         fieldRef = context.register(fieldDict);
         try { field = context.lookup(fieldRef); } catch { }
         try { kidsArray = field.lookupMaybe ? field.lookupMaybe(PDFName.of('Kids')) : null; } catch { }
         try { if (widget) widget.set(PDFName.of('Parent'), fieldRef); } catch { }
+        // Strip field-level keys from the widget so Adobe doesn't count it as a second signature.
+        try { if (widget && widget.delete) widget.delete(PDFName.of('FT')); } catch { }
+        try { if (widget && widget.delete) widget.delete(PDFName.of('T')); } catch { }
+        try { if (widget && widget.delete) widget.delete(PDFName.of('V')); } catch { }
+        try { if (widget && widget.delete) widget.delete(PDFName.of('Kids')); } catch { }
         fieldRefs[fieldsIndex] = fieldRef;
       } catch { }
     }
@@ -453,6 +460,7 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
     try { widget.set(PDFName.of('P'), targetPage.ref); } catch { }
 
     const helv = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const zapf = await pdfDoc.embedFont(StandardFonts.ZapfDingbats);
     const pad = (n) => String(n).padStart(2, '0');
     const dt = signingTime || new Date();
     const tsText = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
@@ -469,17 +477,19 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
       }
       return s;
     };
-    const maxTextW = Math.max(0, (x2 - x1) - padX * 2);
+    const ckAreaW = 18; // left column reserved for vector checkmark
+    const textX = padX + ckAreaW; // text starts after checkmark area
+    const maxTextW = Math.max(0, (x2 - x1) - textX - padX);
     let line1Fit = fitText(line1, maxTextW);
     let line2Fit = fitText(line2, maxTextW);
     // Recalculate content width based on actual fitted text
     let contentW = Math.max(helv.widthOfTextAtSize(line1Fit, fontSize), helv.widthOfTextAtSize(line2Fit, fontSize));
-    let w = Math.max(x2 - x1, Math.ceil(contentW) + padX * 2);
+    let w = Math.max(x2 - x1, Math.ceil(contentW) + textX + padX);
     // If the fitted text is shorter than the original, expand the rectangle to fit the full text
-    if (helv.widthOfTextAtSize(line1, fontSize) + padX * 2 <= w) line1Fit = line1;
-    if (helv.widthOfTextAtSize(line2, fontSize) + padX * 2 <= w) line2Fit = line2;
+    if (helv.widthOfTextAtSize(line1, fontSize) + textX + padX <= w) line1Fit = line1;
+    if (helv.widthOfTextAtSize(line2, fontSize) + textX + padX <= w) line2Fit = line2;
     contentW = Math.max(helv.widthOfTextAtSize(line1Fit, fontSize), helv.widthOfTextAtSize(line2Fit, fontSize));
-    w = Math.max(x2 - x1, Math.ceil(contentW) + padX * 2);
+    w = Math.max(x2 - x1, Math.ceil(contentW) + textX + padX);
     const h = Math.min(Math.max(0, y2 - y1), (2 * fontSize) + (lh - fontSize) + padY * 2);
     let newX1 = x1, newY1 = y1, newX2 = x2, newY2 = y2;
     switch (anchor) {
@@ -491,8 +501,26 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
     try { widget.set(PDFName.of('Rect'), context.obj([newX1, newY1, newX2, newY2])); } catch { }
 
     const esc = (s) => String(s).replace(new RegExp('\\', 'g'), '\\').replace(/\(/g, '\(').replace(/\)/g, '\)');
-    const content = ['BT', `/F1 ${fontSize} Tf`, `1 0 0 1 ${padX} ${Math.max(0, h - padY - fontSize)} Tm`, `(${esc(line1Fit)}) Tj`, `1 0 0 1 ${padX} ${Math.max(0, h - padY - fontSize - lh)} Tm`, `(${esc(line2Fit)}) Tj`, 'ET'].join('\n');
-    const apStream = context.stream(content, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, Math.max(1, w), Math.max(1, h)], Matrix: [1, 0, 0, 1, 0, 0], Resources: { Font: { F1: helv.ref } } });
+    // ZapfDingbats checkmark: character '4' (0x34) = ✓ in ZapfDingbats encoding
+    const cy = h / 2;
+    const ckSize = Math.min(h - 4, 14);
+    const ckY = Math.max(0, (h - ckSize) / 2).toFixed(1);
+    const content = [
+      'BT',
+      '0 0.5 0 rg',
+      `/F2 ${ckSize} Tf`,
+      `1 0 0 1 3 ${ckY} Tm`,
+      '(4) Tj',
+      '0 0.5 0 rg',
+      `/F1 ${fontSize} Tf`,
+      `1 0 0 1 ${textX} ${Math.max(0, h - padY - fontSize)} Tm`,
+      `(${esc(line1Fit)}) Tj`,
+      '0 0 0 rg',
+      `1 0 0 1 ${textX} ${Math.max(0, h - padY - fontSize - lh)} Tm`,
+      `(${esc(line2Fit)}) Tj`,
+      'ET',
+    ].join('\n');
+    const apStream = context.stream(content, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, Math.max(1, w), Math.max(1, h)], Matrix: [1, 0, 0, 1, 0, 0], Resources: { Font: { F1: helv.ref, F2: zapf.ref } } });
     try { widget.set(PDFName.of('AP'), context.obj({ N: context.register(apStream) })); } catch { }
     try { const acro = pdfDoc.catalog.lookup(PDFName.of('AcroForm')); acro.set(PDFName.of('SigFlags'), PDFNumber.of(3)); if (pdfDoc.catalog.delete) pdfDoc.catalog.delete(PDFName.of('NeedAppearances')); } catch { }
 
@@ -556,8 +584,11 @@ async function configureSignatureWidget(pdfDoc, options = {}) {
       // Draw the new signature rectangle/text, left-aligned (like /sign/pdf)
       const yTopDraw = Math.max(0, newY1 + h - padY - fontSize);
       targetPage.drawRectangle({ x: newX1, y: newY1, width: Math.max(1, w), height: Math.max(1, h), color: rgb(1, 1, 1), opacity: 1, borderOpacity: 0 });
-      targetPage.drawText(line1Fit, { x: newX1 + padX, y: yTopDraw, size: fontSize, font: helv, color: rgb(0, 0, 0) });
-      targetPage.drawText(line2Fit, { x: newX1 + padX, y: Math.max(0, yTopDraw - lh), size: fontSize, font: helv, color: rgb(0, 0, 0) });
+      // ZapfDingbats checkmark character '4' = ✓
+      const ckSize = Math.min(h - 4, 14);
+      try { targetPage.drawText('4', { x: newX1 + 3, y: newY1 + (h - ckSize) / 2, size: ckSize, font: zapf, color: rgb(0, 0.5, 0) }); } catch {}
+      targetPage.drawText(line1Fit, { x: newX1 + textX, y: yTopDraw, size: fontSize, font: helv, color: rgb(0, 0.5, 0) });
+      targetPage.drawText(line2Fit, { x: newX1 + textX, y: Math.max(0, yTopDraw - lh), size: fontSize, font: helv, color: rgb(0, 0, 0) });
     } catch { }
   } catch { }
 }
@@ -1246,8 +1277,10 @@ async function buildPlaceholderWithVisibleStamp(pdfInputBytes, userName, reason,
         const kidsArr = context.obj([widgetRef]);
         const fieldDict = context.obj({ FT: PDFName.of('Sig'), Kids: kidsArr, T: PDFString.of('Signature1') });
         try {
-          const vMaybe = widget && widget.lookupMaybe ? widget.lookupMaybe(PDFName.of('V')) : null;
-          if (vMaybe) fieldDict.set(PDFName.of('V'), vMaybe);
+          // Use .get() so we copy the raw PDFRef to the signature dict, not the dereferenced dict.
+          // The parent field MUST have /V pointing to the signature dict so Adobe treats it as signed.
+          const vRef = widget && widget.get ? widget.get(PDFName.of('V')) : null;
+          if (vRef) fieldDict.set(PDFName.of('V'), vRef);
         } catch { }
         fieldRef = context.register(fieldDict);
         try { field = context.lookup(fieldRef); } catch { }
@@ -1296,6 +1329,15 @@ async function buildPlaceholderWithVisibleStamp(pdfInputBytes, userName, reason,
         if (!has) kids.push(widgetRef);
       }
     } catch { }
+
+    // Strip field-level keys from the widget annotation so Adobe Reader does not treat it as
+    // a second independent signature field. /FT, /T, /V and /Kids belong only on the parent.
+    if (!pdfRefEquals(widgetRef, fieldRef)) {
+      try { if (widget && widget.delete) widget.delete(PDFName.of('FT')); } catch { }
+      try { if (widget && widget.delete) widget.delete(PDFName.of('T')); } catch { }
+      try { if (widget && widget.delete) widget.delete(PDFName.of('V')); } catch { }
+      try { if (widget && widget.delete) widget.delete(PDFName.of('Kids')); } catch { }
+    }
 
     // Apply rect override
     if (rectOverride) {
@@ -1403,11 +1445,13 @@ async function buildPlaceholderWithVisibleStamp(pdfInputBytes, userName, reason,
           // Filter out any accidental fieldRef entries and any existing widgetRef on non-target pages
           const filtered = [];
           for (const r of arr) {
-            if (r === fieldRef) continue; // never keep field as annot
-            if (i !== tIndex && r === widgetRef) continue; // drop widget from non-target pages
+            if (pdfRefEquals(r, fieldRef)) continue; // never keep field as annot
+            if (i !== tIndex && pdfRefEquals(r, widgetRef)) continue; // drop widget from non-target pages
             filtered.push(r);
           }
-          if (i === tIndex && widgetRef) filtered.push(widgetRef); // ensure present on target page
+          // Only add widgetRef to the target page if it is not already present (prevents duplicates).
+          const widgetAlreadyPresent = filtered.some(r => pdfRefEquals(r, widgetRef));
+          if (i === tIndex && widgetRef && !widgetAlreadyPresent) filtered.push(widgetRef);
           if (filtered.length) pg.node.set(PDFName.of('Annots'), pdfDoc2.context.obj(filtered));
           else { try { pg.node.delete && pg.node.delete(PDFName.of('Annots')); } catch { } }
         } catch { }
@@ -1421,7 +1465,7 @@ async function buildPlaceholderWithVisibleStamp(pdfInputBytes, userName, reason,
           else if (annT.array) { for (const r of annT.array) items.push(r); }
         }
         let presentT = false;
-        for (const r of items) { if (r === widgetRef) { presentT = true; break; } }
+        for (const r of items) { if (pdfRefEquals(r, widgetRef)) { presentT = true; break; } }
         if (!presentT && widgetRef) {
           items.push(widgetRef);
           targetPage.node.set(PDFName.of('Annots'), pdfDoc2.context.obj(items));

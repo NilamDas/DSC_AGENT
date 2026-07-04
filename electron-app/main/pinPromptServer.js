@@ -2,6 +2,20 @@ const { BrowserWindow, ipcMain, app } = require('electron');
 const http = require('http');
 
 let pinPrompt = { server: null, port: null, token: null, ready: null, busy: false, win: null, busyTimer: null };
+let isAppQuitting = false;
+app.on('before-quit', () => {
+  isAppQuitting = true;
+  // Destroy pin window so window-all-closed can fire and app can fully exit
+  if (pinPrompt.win && !pinPrompt.win.isDestroyed()) {
+    try { pinPrompt.win.destroy(); } catch {}
+    pinPrompt.win = null;
+  }
+  // Close HTTP server so it doesn't hold the event loop open
+  if (pinPrompt.server) {
+    try { pinPrompt.server.close(); } catch {}
+    pinPrompt.server = null;
+  }
+});
 
 // Set/clear busy with a 90-second safety auto-reset so one bad cycle never
 // leaves the flag permanently true.
@@ -12,8 +26,7 @@ function setBusy(busy) {
     pinPrompt.busyTimer = setTimeout(() => {
       pinPrompt.busy = false;
       pinPrompt.busyTimer = null;
-      try { if (pinPrompt.win && !pinPrompt.win.isDestroyed()) pinPrompt.win.close(); } catch {}
-      pinPrompt.win = null;
+      try { if (pinPrompt.win && !pinPrompt.win.isDestroyed()) pinPrompt.win.hide(); } catch {}
     }, 90000);
   }
 }
@@ -47,88 +60,76 @@ function forceWindowFocus(w) {
   try { w.flashFrame(true); } catch {}
 }
 
-async function showPinDialog(message, getMainWindow) {
+// Pre-create the PIN window once at startup and keep it hidden so it loads in
+// the background. When a sign request arrives we just show() it — near-instant
+// with no BrowserWindow creation / HTML parse delay (was 3-4 s).
+// It is NOT given a parent so it is a top-level window; this avoids the Windows
+// foreground-lock issue that prevented it from stealing focus when the control
+// panel was the active window.
+function prewarmPinWindow() {
+  if (pinPrompt.win && !pinPrompt.win.isDestroyed()) return;
+  try {
+    const w = new BrowserWindow({
+      width: 460,
+      height: 240,
+      useContentSize: true,
+      resizable: false,
+      alwaysOnTop: true,
+      acceptFirstMouse: true,
+      focusable: true,
+      modal: false,
+      skipTaskbar: true,   // hidden from taskbar until shown
+      show: false,
+      webPreferences: { nodeIntegration: true, contextIsolation: false }
+    });
+    pinPrompt.win = w;
+    w.loadFile(require('path').join(__dirname, '..', 'renderer', 'pin.html'));
+    w.once('ready-to-show', () => { try { w.center(); } catch {} });
+    // Intercept the close event (Alt-F4, window X button) — hide and cancel
+    // instead of destroying so the window stays pre-warmed for next time.
+    // During app quit, allow the window to actually close.
+    w.on('close', (e) => {
+      if (isAppQuitting) return; // let it close so app can fully exit
+      e.preventDefault();
+      try { w.setSkipTaskbar(true); } catch {}
+      try { w.hide(); } catch {}
+      if (pinPrompt.busy) {
+        setBusy(false);
+        // Synthetic cancel — unblock any waiting IPC listeners
+        ipcMain.emit('pin:cancel');
+      }
+    });
+  } catch {}
+}
+
+async function showPinDialog(message) {
   return new Promise((resolve) => {
     try {
-      // Reuse existing window if it is alive and not in the middle of closing.
-      if (pinPrompt.win && !pinPrompt.win.isDestroyed()) {
-        const w = pinPrompt.win;
-        try { w.webContents.send('pin:set-message', String(message || 'Enter token PIN')); } catch {}
-        forceWindowFocus(w);
-        // Re-apply focus after a short delay in case the OS blocked the first attempt.
-        setTimeout(() => { forceWindowFocus(w); }, 120);
+      const w = pinPrompt.win;
+      if (!w || w.isDestroyed()) { resolve(undefined); return; }
 
-        let settled = false;
-        const settle = (val) => { if (!settled) { settled = true; resolve(val); } };
-        const cleanup = () => {
-          ipcMain.removeListener('pin:submit', onSubmit);
-          ipcMain.removeListener('pin:cancel', onCancel);
-          try { if (w && !w.isDestroyed()) w.removeListener('closed', onClosed); } catch {}
-          try { if (pinPrompt.win && !pinPrompt.win.isDestroyed()) pinPrompt.win.hide(); } catch {}
-        };
-        const onSubmit = (evt, pin) => { cleanup(); settle(pin); };
-        const onCancel = () => { cleanup(); settle(undefined); };
-        const onClosed = () => { cleanup(); settle(undefined); };
-        ipcMain.once('pin:submit', onSubmit);
-        ipcMain.once('pin:cancel', onCancel);
-        try { w.once('closed', onClosed); } catch {}
-        return;
-      }
+      // Clear previous input and set the new message before making the window visible.
+      try { w.webContents.send('pin:reset'); } catch {}
+      try { w.webContents.send('pin:set-message', String(message || 'Enter token PIN')); } catch {}
 
-      const w = new BrowserWindow({
-        width: 460,
-        height: 240,
-        useContentSize: true,
-        resizable: false,
-        alwaysOnTop: true,
-        acceptFirstMouse: true,
-        focusable: true,
-        modal: false,
-        skipTaskbar: false,
-        parent: (typeof getMainWindow === 'function' ? getMainWindow() : null) || undefined,
-        show: false,
-        webPreferences: { nodeIntegration: true, contextIsolation: false }
-      });
-      pinPrompt.win = w;
-
-      let finished = false;
-      const settle = (result) => { if (!finished) { finished = true; resolve(result); } };
-      const finish = (result) => {
-        // Eagerly clear the reference so any concurrent request doesn't try to
-        // reuse a window that is in the middle of being destroyed.
-        if (pinPrompt.win === w) pinPrompt.win = null;
-        try { if (!w.isDestroyed()) w.close(); } catch {}
-        settle(result);
+      let settled = false;
+      const settle = (val) => { if (!settled) { settled = true; resolve(val); } };
+      const cleanup = () => {
+        ipcMain.removeListener('pin:submit', onSubmit);
+        ipcMain.removeListener('pin:cancel', onCancel);
+        try { w.setSkipTaskbar(true); } catch {}
+        try { if (!w.isDestroyed()) w.hide(); } catch {}
       };
-
-      // If the window is closed by any other means (e.g. OS, task manager), resolve as canceled.
-      w.on('closed', () => { if (pinPrompt.win === w) pinPrompt.win = null; settle(undefined); });
-
-      w.once('ready-to-show', () => {
-        try {
-          const pref = w.webContents.getPreferredSize();
-          if (pref && pref.width && pref.height) {
-            w.setContentSize(Math.min(Math.max(pref.width, 420), 640), Math.min(Math.max(pref.height, 200), 480));
-          }
-        } catch {}
-        try { if (w.center) w.center(); } catch {}
-        forceWindowFocus(w);
-        // Re-apply focus at intervals to overcome OS foreground-lock.
-        setTimeout(() => { forceWindowFocus(w); }, 60);
-        setTimeout(() => { forceWindowFocus(w); }, 250);
-      });
-
-      w.loadFile(require('path').join(__dirname, '..', 'renderer', 'pin.html'));
-
-      w.webContents.once('did-finish-load', () => {
-        w.webContents.send('pin:set-message', String(message || 'Enter token PIN'));
-        w.webContents.send('pin:focus');
-      });
-
-      const onSubmit = (evt, pin) => { ipcMain.removeListener('pin:cancel', onCancel); finish(pin); };
-      const onCancel = () => { ipcMain.removeListener('pin:submit', onSubmit); finish(undefined); };
+      const onSubmit = (evt, pin) => { cleanup(); settle(pin); };
+      const onCancel = () => { cleanup(); settle(undefined); };
       ipcMain.once('pin:submit', onSubmit);
       ipcMain.once('pin:cancel', onCancel);
+
+      try { w.center(); } catch {}
+      try { w.setSkipTaskbar(false); } catch {}
+      forceWindowFocus(w);
+      // One follow-up focus pulse in case the OS blocked the first attempt.
+      setTimeout(() => { forceWindowFocus(w); }, 60);
     } catch {
       resolve(undefined);
     }
@@ -154,11 +155,12 @@ function ensureReady({ getMainWindow, log } = {}) {
             return;
           }
           if (pinPrompt.busy) {
-            // Safety: if the window has been destroyed but busy is still flagged, auto-recover.
-            if (!pinPrompt.win || pinPrompt.win.isDestroyed()) {
-              logger('[pin] busy flag stuck (window gone), auto-recovering');
+            // Auto-recover if the window was hidden/destroyed while busy was still set.
+            const gone = !pinPrompt.win || pinPrompt.win.isDestroyed() || !pinPrompt.win.isVisible();
+            if (gone) {
+              logger('[pin] busy flag stuck (window not visible), auto-recovering');
               setBusy(false);
-              pinPrompt.win = null;
+              if (!pinPrompt.win || pinPrompt.win.isDestroyed()) prewarmPinWindow();
             } else {
               logger('[pin] prompt already active');
               res.writeHead(429, { 'Content-Type': 'application/json' });
@@ -170,7 +172,7 @@ function ensureReady({ getMainWindow, log } = {}) {
           setBusy(true);
           const body = await readJson(req).catch(() => ({}));
           const hint = (body && body.message) || 'Enter token PIN';
-          const pin = await showPinDialog(hint, getMainWindow).catch(() => undefined);
+          const pin = await showPinDialog(hint).catch(() => undefined);
           try {
             if (!pin && pin !== '') {
               res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -198,6 +200,9 @@ function ensureReady({ getMainWindow, log } = {}) {
       pinPrompt.token = token;
       logger(`[pin] prompt server on 127.0.0.1:${pinPrompt.port}`);
       resolve({ port: pinPrompt.port, token: pinPrompt.token });
+      // Pre-warm the PIN window in the background so the first sign request
+      // shows it instantly instead of waiting 3-4 s for window creation.
+      setImmediate(() => { try { prewarmPinWindow(); } catch {} });
     });
   });
   return pinPrompt.ready;

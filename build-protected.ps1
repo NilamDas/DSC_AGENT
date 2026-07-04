@@ -61,8 +61,29 @@ function Write-AsciiFile {
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.Encoding]::ASCII)
 }
 
+function Get-CurrentNodeExecutable {
+  $nodeCommand = Get-Command node -ErrorAction Stop
+  if (-not $nodeCommand -or -not $nodeCommand.Source) {
+    throw 'Unable to locate the Node.js executable used for this build.'
+  }
+
+  return $nodeCommand.Source
+}
+
+function Sync-BundledNodeRuntime {
+  param(
+    [string]$SourceNodeExe,
+    [string]$DestinationNodeExe
+  )
+
+  Ensure-FileExists -Path $SourceNodeExe
+  Ensure-Directory -Path (Split-Path -Parent $DestinationNodeExe)
+  Copy-Item -LiteralPath $SourceNodeExe -Destination $DestinationNodeExe -Force
+}
+
 function Invoke-BytenodeCompile {
   param(
+    [string]$NodeExecutable = 'node',
     [string]$InputFile,
     [string]$OutputFile,
     [switch]$Electron,
@@ -95,7 +116,7 @@ const [inputFile, outputFile, runtimeKind, runtimePath] = process.argv.slice(1);
     if ($NodePathEntries -and $NodePathEntries.Count -gt 0) {
       $env:NODE_PATH = ($NodePathEntries | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique) -join ';'
     }
-    Invoke-Checked -FilePath 'node' -Arguments @('-e', $compileScript, $InputFile, $OutputFile, $runtimeKind, $runtimePathArg)
+    Invoke-Checked -FilePath $NodeExecutable -Arguments @('-e', $compileScript, $InputFile, $OutputFile, $runtimeKind, $runtimePathArg)
   }
   finally {
     if ($null -eq $previousNodePath) {
@@ -115,6 +136,8 @@ try {
   $electronBinary = Join-Path $repoRoot 'electron-app\node_modules\electron\dist\electron.exe'
   $rootNodeModules = Join-Path $repoRoot 'node_modules'
   $electronNodeModules = Join-Path $repoRoot 'electron-app\node_modules'
+  $bundledNodeSource = Get-CurrentNodeExecutable
+  $bundledNodeDest = Join-Path $repoRoot 'electron-app\bin\win\node.exe'
 
   Ensure-FileExists -Path $rootEsbuild
   Ensure-FileExists -Path $rootObfuscator
@@ -133,6 +156,9 @@ try {
   Clear-Directory -Path $agentDistDir
   Clear-Directory -Path $electronBuildArtifacts
   Clear-Directory -Path $electronRuntimeDir
+
+  Write-Step 'Provisioning bundled Node runtime'
+  Sync-BundledNodeRuntime -SourceNodeExe $bundledNodeSource -DestinationNodeExe $bundledNodeDest
 
   $agentEntry = Join-Path $repoRoot 'agent\dsc-agent.js'
   $agentBundle = Join-Path $rootBuildArtifacts 'dsc-agent.bundle.js'
@@ -167,7 +193,7 @@ try {
   )
 
   Write-Step 'Compiling agent bytecode'
-  Invoke-BytenodeCompile -InputFile $agentObf -OutputFile $agentJsc -NodePathEntries @($rootNodeModules)
+  Invoke-BytenodeCompile -NodeExecutable $bundledNodeDest -InputFile $agentObf -OutputFile $agentJsc -NodePathEntries @($rootNodeModules)
   Write-AsciiFile -Path $agentLoader -Content "require('bytenode');`nrequire('./dsc-agent.jsc');`n"
 
   $electronMainSource = Join-Path $repoRoot 'electron-app\main-bytecode-point.js'
