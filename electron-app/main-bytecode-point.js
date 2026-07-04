@@ -89,21 +89,34 @@ function getPort(settings) {
 }
 
 function resolveAgentEntry() {
-  // Prefer packaged extraResources (../ copied to resources/agent), else parent repo
-  const packaged = path.join(process.resourcesPath || '', 'agent', 'dsc-agent.loader.js');
-  if (fs.existsSync(packaged)) return packaged;
+  if (app.isPackaged) {
+    const packaged = path.join(process.resourcesPath || '', 'agent', 'dsc-agent.loader.js');
+    if (!fs.existsSync(packaged)) {
+      throw new Error(`Packaged agent entry not found: ${packaged}`);
+    }
+    return packaged;
+  }
+
   const dev = path.join(__dirname, '..', '..', '..', 'dist', 'agent', 'dsc-agent.loader.js');
+  if (!fs.existsSync(dev)) {
+    throw new Error(`Development agent entry not found: ${dev}`);
+  }
   return dev;
 }
 
 function resolveNodeBin() {
-  // Prefer a bundled Node runtime if present under resources/bin/<platform>/
   const res = process.resourcesPath || '';
   const plat = process.platform;
   let candidate;
   if (plat === 'win32') candidate = path.join(res, 'bin', 'win', 'node.exe');
   else if (plat === 'darwin') candidate = path.join(res, 'bin', 'mac', 'node');
   else candidate = path.join(res, 'bin', 'linux', 'node');
+
+  if (app.isPackaged) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+    throw new Error(`Bundled Node runtime not found: ${candidate}`);
+  }
+
   if (candidate && fs.existsSync(candidate)) return candidate;
   return process.env.DSC_NODE_PATH || 'node';
 }

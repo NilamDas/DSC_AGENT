@@ -1,6 +1,6 @@
 {
   "name": "dsc-agent-electron",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tray UI to control dsc-agent.js (non-destructive)",
   "main": "runtime/electron/main.loader.js",
   "private": true,
@@ -24,6 +24,7 @@
     "bytenode": "^1.5.7"
   },
   "devDependencies": {
+    "@electron/fuses": "^2.1.1",
     "electron": "^29.3.0",
     "electron-builder": "^24.13.3",
     "esbuild": "^0.27.3",

@@ -1,6 +1,6 @@
 {
   "name": "dsc-agent-electron",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tray UI to control dsc-agent.js (non-destructive)",
   "main": "main.js",
   "private": true,
