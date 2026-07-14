@@ -5,6 +5,10 @@ const { spawn } = require('child_process');
 // Local PIN prompt micro-server (for per-sign PIN requests from the agent)
 const { ensureReady: ensurePinPromptServerReady } = require('./main/pinPromptServer');
 
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('no-sandbox');
+app.commandLine.appendSwitch('disable-gpu-sandbox');
+
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox');
   app.commandLine.appendSwitch('disable-setuid-sandbox');
@@ -19,12 +23,35 @@ let pendingControlPanelShow = false;
 let isQuitting = false;
 let lastLogs = [];
 
+// Log file written right next to the executable so you can find it easily
+// e.g. C:\Users\Administrator\AppData\Local\Programs\dsc-agent-electron\electron.log
+const LOG_FILE_PATH = (() => {
+  try {
+    // app.getPath('exe') returns the full path to the .exe — we write alongside it
+    return path.join(path.dirname(app.getPath('exe')), 'electron.log');
+  } catch {
+    try {
+      return path.join(app.getPath('userData'), 'electron.log');
+    } catch {
+      return path.join(require('os').tmpdir(), 'dsc-agent-electron.log');
+    }
+  }
+})();
+
+function writeToLogFile(line) {
+  try {
+    fs.appendFileSync(LOG_FILE_PATH, line + '\n', 'utf8');
+  } catch {}
+}
+
 const LOG = (msg) => {
   const line = `[electron] ${msg}`;
   console.log(line);
+  writeToLogFile(line);
   lastLogs.push(line);
   if (lastLogs.length > 2000) lastLogs.shift();
 };
+
 
 const { Notification } = require('electron');
 
@@ -194,11 +221,12 @@ function getAppIcon() {
 
 
 function createWindow() {
+  LOG('createWindow called');
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
   mainWindowReady = false;
   pendingControlPanelShow = false;
-  // const iconPath = path.join(__dirname, 'assets', 'icon.png');
-   const iconPath = getAppIcon();
+  const iconPath = getAppIcon();
+  LOG(`createWindow: resolved icon path is ${iconPath}`);
   mainWindow = new BrowserWindow({
     width: 820,
     height: 600,
@@ -210,6 +238,19 @@ function createWindow() {
       nodeIntegration: false,
     }
   });
+
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    LOG(`[electron] did-fail-load: ${errorDescription} (${errorCode}) at ${validatedURL}`);
+  });
+
+  mainWindow.webContents.on('crashed', (event, killed) => {
+    LOG(`[electron] renderer process crashed (killed=${killed})`);
+  });
+
+  mainWindow.on('unresponsive', () => {
+    LOG('[electron] window became unresponsive');
+  });
+
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
       event.preventDefault();
@@ -221,24 +262,33 @@ function createWindow() {
     mainWindowReady = false;
   });
   mainWindow.once('ready-to-show', () => {
+    LOG('[electron] ready-to-show event fired');
     mainWindowReady = true;
     if (pendingControlPanelShow) {
       pendingControlPanelShow = false;
       showControlPanel();
     }
   });
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  const htmlPath = path.join(__dirname, 'renderer', 'index.html');
+  LOG(`createWindow: loading file ${htmlPath}`);
+  mainWindow.loadFile(htmlPath);
   return mainWindow;
 }
 
 
 function showControlPanel() {
+  LOG('showControlPanel called');
   const win = createWindow();
-  if (!win || win.isDestroyed()) return;
+  if (!win || win.isDestroyed()) {
+    LOG('showControlPanel: window is null or destroyed');
+    return;
+  }
   if (!mainWindowReady) {
+    LOG('showControlPanel: window is not ready yet, deferring show');
     pendingControlPanelShow = true;
     return;
   }
+  LOG('showControlPanel: showing window now');
   if (win.isMinimized()) win.restore();
   win.show();
   try { win.focus(); win.webContents.focus(); } catch {}
