@@ -529,6 +529,12 @@ app.whenReady().then(() => {
 
   let icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
   if (process.platform === 'darwin') {
+    // macOS menu bar icons must be small (usually 16x16 or 22x22). 
+    // If the provided image is larger (like a 512x512 app icon), it won't render in the menu bar.
+    const size = icon.getSize();
+    if (size.width > 22 || size.height > 22) {
+      icon = icon.resize({ width: 16, height: 16 });
+    }
     icon.setTemplateImage(true);
   }
   tray = new Tray(icon);
