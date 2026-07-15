@@ -14,6 +14,13 @@ if (process.platform === 'linux') {
   app.commandLine.appendSwitch('disable-setuid-sandbox');
 }
 
+// GPU crash resilience: On some Windows machines (missing VC++ runtimes, old drivers,
+// or virtual machines), the GPU process crashes with exit_code=-1073741515 (0xC0000135).
+// These flags force Electron to fall back to software rendering so the app still works.
+app.commandLine.appendSwitch('disable-gpu-sandbox');
+app.commandLine.appendSwitch('no-sandbox');
+app.disableHardwareAcceleration();
+
 let tray = null;
 let mainWindow = null;
 let agentProc = null;
