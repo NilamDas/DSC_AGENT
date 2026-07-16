@@ -1,7 +1,7 @@
 {
   "requirePinPerSign": true,
   "pinPrompt": {},
-   "timeServerUrl": "https://103.158.204.86/swakshar/",
+   "timeServerUrl": "https://eswakshar.assam.gov.in/",
   "timeServerEndpoint": "/api/time",
   "timeServerMethod": "POST",
   "timeServerTimeField": "server_time",
