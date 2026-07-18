@@ -1,0 +1,317 @@
+{
+  "agent/agen_backeup/dsc-agent copy.js": {
+    "mtime": 1773288920.1799777,
+    "ast_hash": "d1abab99e4101d81c4ccd3ddc31d8f5d",
+    "semantic_hash": "d1abab99e4101d81c4ccd3ddc31d8f5d"
+  },
+  "agent/agen_backeup/dsc-agent-new-api-added-all-working.js": {
+    "mtime": 1773288920.1809776,
+    "ast_hash": "7d044f5151c26286359c6137e9a80669",
+    "semantic_hash": "7d044f5151c26286359c6137e9a80669"
+  },
+  "agent/agen_backeup/dsc-agent-pefect-single-sign.js": {
+    "mtime": 1773288920.1819782,
+    "ast_hash": "dbf224564ca4e3f092655086cc8a57b1",
+    "semantic_hash": "dbf224564ca4e3f092655086cc8a57b1"
+  },
+  "agent/agen_backeup/dsc-agent-resign-fully-working.js": {
+    "mtime": 1773288920.1819782,
+    "ast_hash": "4a0b6d18202410d7a56b759d90d677da",
+    "semantic_hash": "4a0b6d18202410d7a56b759d90d677da"
+  },
+  "agent/agen_backeup/dsc-agent.js": {
+    "mtime": 1773288920.1839783,
+    "ast_hash": "422b2fabc58a7bc8460761d0cfd81afe",
+    "semantic_hash": "422b2fabc58a7bc8460761d0cfd81afe"
+  },
+  "agent/agen_backeup/dsc-agent_batch_fully_working.js": {
+    "mtime": 1773288920.1839783,
+    "ast_hash": "373f941cec7da6b07773c12acf41a19e",
+    "semantic_hash": "373f941cec7da6b07773c12acf41a19e"
+  },
+  "agent/dsc-agent - batch working.js": {
+    "mtime": 1773288920.1849785,
+    "ast_hash": "c5594dabdfc2a4858847067ca42c465d",
+    "semantic_hash": "c5594dabdfc2a4858847067ca42c465d"
+  },
+  "agent/dsc-agent-all-working.js": {
+    "mtime": 1774842349.9824793,
+    "ast_hash": "85b2377a7257dddb3a2df51e8baf9c3e",
+    "semantic_hash": "85b2377a7257dddb3a2df51e8baf9c3e"
+  },
+  "agent/dsc-agent.js": {
+    "mtime": 1777545691.2561789,
+    "ast_hash": "cc19b13928c1145b9341f17075d2b843",
+    "semantic_hash": "cc19b13928c1145b9341f17075d2b843"
+  },
+  "agent/dsc-agent_09_10.js": {
+    "mtime": 1773288920.185979,
+    "ast_hash": "1776b831848e5be58ec593b958e2f5ac",
+    "semantic_hash": "1776b831848e5be58ec593b958e2f5ac"
+  },
+  "agent/lib/config.js": {
+    "mtime": 1775114176.112766,
+    "ast_hash": "01ccff3e6c1411972a24de75e1cf57bf",
+    "semantic_hash": "01ccff3e6c1411972a24de75e1cf57bf"
+  },
+  "agent/lib/pdf.js": {
+    "mtime": 1773288920.186979,
+    "ast_hash": "32c0e541f9006f8f2ec33e28df75ad20",
+    "semantic_hash": "32c0e541f9006f8f2ec33e28df75ad20"
+  },
+  "agent/lib/pinPromptClient.js": {
+    "mtime": 1773288920.186979,
+    "ast_hash": "71b995efbb9096e9ad74299382e9cc5b",
+    "semantic_hash": "71b995efbb9096e9ad74299382e9cc5b"
+  },
+  "agent/lib/pkcs11.js": {
+    "mtime": 1773288920.186979,
+    "ast_hash": "1fb65ff0a5a38cb9027535cb71eede0f",
+    "semantic_hash": "1fb65ff0a5a38cb9027535cb71eede0f"
+  },
+  "agent/lib/signAuthorizationPayloadBuilder.js": {
+    "mtime": 1775288594.1029317,
+    "ast_hash": "de1606ccdb3b2a23d3bee6df729736df",
+    "semantic_hash": "de1606ccdb3b2a23d3bee6df729736df"
+  },
+  "agent/services/signingTimeService.js": {
+    "mtime": 1775288594.1104493,
+    "ast_hash": "3cf714192d035f97e95b94e83449f3c3",
+    "semantic_hash": "3cf714192d035f97e95b94e83449f3c3"
+  },
+  "agent/services/timeServerHealthService.js": {
+    "mtime": 1774850616.9720817,
+    "ast_hash": "e42feac3cbec4d1c0b1180629b664160",
+    "semantic_hash": "e42feac3cbec4d1c0b1180629b664160"
+  },
+  "agent/timeServerClient.js": {
+    "mtime": 1775452085.0351849,
+    "ast_hash": "b960a3c05d9575669d8c0c8fc9947f98",
+    "semantic_hash": "b960a3c05d9575669d8c0c8fc9947f98"
+  },
+  "build-mac.sh": {
+    "mtime": 1775806254.8938506,
+    "ast_hash": "12c40e30618b042db9d6ce202a72b459",
+    "semantic_hash": "12c40e30618b042db9d6ce202a72b459"
+  },
+  "build-protected.ps1": {
+    "mtime": 1783590603.2292569,
+    "ast_hash": "49b279c21f62e05c43d1dd5e2a24e2da",
+    "semantic_hash": "49b279c21f62e05c43d1dd5e2a24e2da"
+  },
+  "client/dsc-agent-autowire.js": {
+    "mtime": 1773288920.2139854,
+    "ast_hash": "0c9a90171737f59f2aef114217395d1b",
+    "semantic_hash": "0c9a90171737f59f2aef114217395d1b"
+  },
+  "client/dsc-agent-client.d.ts": {
+    "mtime": 1773288920.2139854,
+    "ast_hash": "d3400bf7fdc7ef4bdba769b47a574039",
+    "semantic_hash": "d3400bf7fdc7ef4bdba769b47a574039"
+  },
+  "client/dsc-agent-client.iife.js": {
+    "mtime": 1774842361.3377962,
+    "ast_hash": "6469d9c902de967e475876c86c5d20ae",
+    "semantic_hash": "6469d9c902de967e475876c86c5d20ae"
+  },
+  "client/dsc-agent-client.js": {
+    "mtime": 1773288920.2149851,
+    "ast_hash": "b90014688e6ae4a08dd641f1d3a7bdf6",
+    "semantic_hash": "b90014688e6ae4a08dd641f1d3a7bdf6"
+  },
+  "client/time-provider.js": {
+    "mtime": 1774843714.9835353,
+    "ast_hash": "1e71afc1b5ae941fe54ee261f46498ed",
+    "semantic_hash": "1e71afc1b5ae941fe54ee261f46498ed"
+  },
+  "dsc-agent.config.json": {
+    "mtime": 1784175661.8517098,
+    "ast_hash": "363418b8f3bc248a0ef403c1ab19e00f",
+    "semantic_hash": "363418b8f3bc248a0ef403c1ab19e00f"
+  },
+  "electron-app/main-bytecode-point.js": {
+    "mtime": 1784089248.1765442,
+    "ast_hash": "f0d96705685cefb313f43ad0a77da6e0",
+    "semantic_hash": "f0d96705685cefb313f43ad0a77da6e0"
+  },
+  "electron-app/main.js": {
+    "mtime": 1784102827.1070378,
+    "ast_hash": "ac8ef5ab90d5569e25c49c2323afd205",
+    "semantic_hash": "ac8ef5ab90d5569e25c49c2323afd205"
+  },
+  "electron-app/main/pinPromptServer.js": {
+    "mtime": 1776943388.2955537,
+    "ast_hash": "afe92bfacac36586cfe990a436abaa78",
+    "semantic_hash": "afe92bfacac36586cfe990a436abaa78"
+  },
+  "electron-app/package.json": {
+    "mtime": 1783590603.2432568,
+    "ast_hash": "0a80b743e2319455aecc4f26b5519436",
+    "semantic_hash": "0a80b743e2319455aecc4f26b5519436"
+  },
+  "electron-app/preload.js": {
+    "mtime": 1773288920.2649965,
+    "ast_hash": "2f53843eae085e624109c551bf455fd7",
+    "semantic_hash": "2f53843eae085e624109c551bf455fd7"
+  },
+  "electron-app/renderer/index.js": {
+    "mtime": 1775115931.8509383,
+    "ast_hash": "83bb62469d9f010b57fa20f1c61ad056",
+    "semantic_hash": "83bb62469d9f010b57fa20f1c61ad056"
+  },
+  "electron-app/renderer/pin.js": {
+    "mtime": 1775547283.8695934,
+    "ast_hash": "875a51079034be49a1ebb912afbca08d",
+    "semantic_hash": "875a51079034be49a1ebb912afbca08d"
+  },
+  "electron-app/scripts/apply-fuses.js": {
+    "mtime": 1775556681.514783,
+    "ast_hash": "82d3f97cda0f42d3f51e2d96ef9c871c",
+    "semantic_hash": "82d3f97cda0f42d3f51e2d96ef9c871c"
+  },
+  "package.json": {
+    "mtime": 1784089252.1371856,
+    "ast_hash": "b68dfbab621b2336333bde28ad70786b",
+    "semantic_hash": "b68dfbab621b2336333bde28ad70786b"
+  },
+  "tools/inspect-signed.js": {
+    "mtime": 1773288920.2719984,
+    "ast_hash": "6144ab79b9b191f69b24725c514f26a2",
+    "semantic_hash": "6144ab79b9b191f69b24725c514f26a2"
+  },
+  ".github/workflows/build-mac.yml": {
+    "mtime": 1775806183.4513113,
+    "ast_hash": "eae607437416d0c0235f7102a81e9171",
+    "semantic_hash": "eae607437416d0c0235f7102a81e9171"
+  },
+  "DSC_AGENT_MANUAL.md": {
+    "mtime": 1783421625.0950253,
+    "ast_hash": "983c7497c477b67f56d80e49e8671cc9",
+    "semantic_hash": "983c7497c477b67f56d80e49e8671cc9"
+  },
+  "PRODUCTIZATION_PLAN.md": {
+    "mtime": 1773288920.1789773,
+    "ast_hash": "890c0c15e8326a8f9fdcebd50e608a6f",
+    "semantic_hash": "890c0c15e8326a8f9fdcebd50e608a6f"
+  },
+  "README.md": {
+    "mtime": 1773288920.1789773,
+    "ast_hash": "7960bc3083aed74abbed52926acf7a2e",
+    "semantic_hash": "7960bc3083aed74abbed52926acf7a2e"
+  },
+  "client/README.md": {
+    "mtime": 1773288920.2139854,
+    "ast_hash": "2520962169bcb012278ebbe97fc8549f",
+    "semantic_hash": "2520962169bcb012278ebbe97fc8549f"
+  },
+  "codex-root-write-test.txt": {
+    "mtime": 1775469075.69266,
+    "ast_hash": "9f06243abcb89c70e0c331c61d871fa7",
+    "semantic_hash": "9f06243abcb89c70e0c331c61d871fa7"
+  },
+  "electron-app/renderer/index-old.html": {
+    "mtime": 1773288920.2649965,
+    "ast_hash": "6e47722f31cb4f354f9fc268b8d3ecb6",
+    "semantic_hash": "6e47722f31cb4f354f9fc268b8d3ecb6"
+  },
+  "electron-app/renderer/index.html": {
+    "mtime": 1773288920.2659974,
+    "ast_hash": "22c77676575dc6d7435fc381863ff1e5",
+    "semantic_hash": "22c77676575dc6d7435fc381863ff1e5"
+  },
+  "electron-app/renderer/pin.html": {
+    "mtime": 1773288920.2659974,
+    "ast_hash": "01368a0bc18dd0d15215f99a1a38d7a0",
+    "semantic_hash": "01368a0bc18dd0d15215f99a1a38d7a0"
+  },
+  "examples/minimal.html": {
+    "mtime": 1773288920.2679968,
+    "ast_hash": "b720cc3fff27c6b4ba9345bb617ad945",
+    "semantic_hash": "b720cc3fff27c6b4ba9345bb617ad945"
+  },
+  "index.html": {
+    "mtime": 1773288920.2689977,
+    "ast_hash": "837fce45f5607441f9d8c7b0384a2745",
+    "semantic_hash": "837fce45f5607441f9d8c7b0384a2745"
+  },
+  "index1.html": {
+    "mtime": 1773288920.2689977,
+    "ast_hash": "8fa0fc3566110805734da91844d864f6",
+    "semantic_hash": "8fa0fc3566110805734da91844d864f6"
+  },
+  "temp_head.txt": {
+    "mtime": 1773288920.2709985,
+    "ast_hash": "817fd34f53850a7b2311142d6d65fafc",
+    "semantic_hash": "817fd34f53850a7b2311142d6d65fafc"
+  },
+  "test-batch.html": {
+    "mtime": 1774849963.8064847,
+    "ast_hash": "4a87db483e9e6bc53eb454f681352519",
+    "semantic_hash": "4a87db483e9e6bc53eb454f681352519"
+  },
+  "test-resign-flatten.html": {
+    "mtime": 1774849963.8064847,
+    "ast_hash": "7be2b2a5caf045fa4a9be9601128ba76",
+    "semantic_hash": "7be2b2a5caf045fa4a9be9601128ba76"
+  },
+  "test-sign.html": {
+    "mtime": 1775288594.1324725,
+    "ast_hash": "551669f49f0dde8f607a662500de86ed",
+    "semantic_hash": "551669f49f0dde8f607a662500de86ed"
+  },
+  "text-sign.html": {
+    "mtime": 1774849963.7764778,
+    "ast_hash": "d885f6a99744cc47509d8436ce8b8479",
+    "semantic_hash": "d885f6a99744cc47509d8436ce8b8479"
+  },
+  "working/test-batch.html": {
+    "mtime": 1773288920.2719984,
+    "ast_hash": "dd829751d548bfe87488055ecaaf6671",
+    "semantic_hash": "dd829751d548bfe87488055ecaaf6671"
+  },
+  "working/test-resign-flatten.html": {
+    "mtime": 1773288920.2719984,
+    "ast_hash": "55db1dfe18e76c79b96a67950fdb1aa0",
+    "semantic_hash": "55db1dfe18e76c79b96a67950fdb1aa0"
+  },
+  "working/test-sign.html": {
+    "mtime": 1773288920.2729983,
+    "ast_hash": "e7fcea056cd8982721afd0437b8bd2c3",
+    "semantic_hash": "e7fcea056cd8982721afd0437b8bd2c3"
+  },
+  "working/test_sign.html": {
+    "mtime": 1773288920.2729983,
+    "ast_hash": "608dd6df5959ebacbdc3b24253fb5c21",
+    "semantic_hash": "608dd6df5959ebacbdc3b24253fb5c21"
+  },
+  "working/text-sign.html": {
+    "mtime": 1773288920.2729983,
+    "ast_hash": "9d9b9d44b651bd1f836ac038ad9dcff8",
+    "semantic_hash": "9d9b9d44b651bd1f836ac038ad9dcff8"
+  },
+  "input.pdf": {
+    "mtime": 1773288920.2689977,
+    "ast_hash": "f61381c0610290c95c60742ea47161b3",
+    "semantic_hash": "f61381c0610290c95c60742ea47161b3"
+  },
+  "electron-app/assets/Mac/icon.png": {
+    "mtime": 1776943388.2915528,
+    "ast_hash": "d979978fc6abbab0f972c63c32c9f040",
+    "semantic_hash": "d979978fc6abbab0f972c63c32c9f040"
+  },
+  "electron-app/assets/Mac/iconTemplate.png": {
+    "mtime": 1776943388.2925532,
+    "ast_hash": "d979978fc6abbab0f972c63c32c9f040",
+    "semantic_hash": "d979978fc6abbab0f972c63c32c9f040"
+  },
+  "electron-app/assets/icon.png": {
+    "mtime": 1773288920.260996,
+    "ast_hash": "d979978fc6abbab0f972c63c32c9f040",
+    "semantic_hash": "d979978fc6abbab0f972c63c32c9f040"
+  },
+  "electron-app/assets/linux/icon.png": {
+    "mtime": 1776943388.2935536,
+    "ast_hash": "d979978fc6abbab0f972c63c32c9f040",
+    "semantic_hash": "d979978fc6abbab0f972c63c32c9f040"
+  }
+}

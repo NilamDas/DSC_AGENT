@@ -1,0 +1,18 @@
+{
+  "name": "dsc-agent-electron",
+  "version": "0.1.1",
+  "description": "Tray UI to control dsc-agent.js (non-destructive)",
+  "main": "runtime/electron/main.loader.js",
+  "private": true,
+  "type": "commonjs",
+  "author": {
+    "name": "DSC Agent",
+    "email": "support@example.com",
+    "url": "https://example.com/dsc-agent"
+  },
+  "homepage": "https://example.com/dsc-agent",
+  "icon": "assets/icon.png",
+  "dependencies": {
+    "bytenode": "^1.5.7"
+  }
+}

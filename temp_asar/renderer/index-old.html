@@ -1,0 +1,166 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DSC Agent Control Panel</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
+      .row { margin: 6px 0; display: grid; grid-template-columns: 140px 1fr; gap: 8px; align-items: center; }
+      label { display: inline-flex; align-items: center; gap:8px; min-width: 140px; color: #555; position: relative; }
+      input[type="text"], input[type="password"] { width: 100%; max-width: 440px; padding: 6px 8px; }
+      button { padding: 7px 10px; }
+      pre { background: #fafafa; border: 1px solid #eee; padding: 8px; max-height: 220px; overflow: auto; }
+      .section { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+      /* additions */
+      .inline { display: inline-flex; align-items: center; gap: 8px; }
+      .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #0002; }
+      .badge.ok { background: #1a7f3715; color: #1a7f37; border-color: #1a7f3730; }
+      .badge.err { background: #b0002015; color: #b00020; border-color: #b0002030; }
+      .badge.warn { background: #ffb10020; color: #8a5a00; border-color: #ffb10040; }
+      button.primary { background: #2b73ff; color: #fff; border: 1px solid #2b73ff; border-radius: 10px; }
+      button.ghost { background: transparent; border: 1px solid #0002; border-radius: 10px; }
+      .btn-row { display: inline-flex; gap: 8px; }
+
+      /* PKCS11 help icon + popover */
+      .help-icon { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:50%; background:#0b5ed7; color:#fff; font-weight:700; font-size:11px; line-height:1; padding:0; border:none; margin-left:6px; cursor:pointer; box-shadow:0 1px 0 rgba(0,0,0,0.06); }
+      .popover { position:absolute; left: calc(100% + 8px); top:50%; transform:translateY(-50%); width:340px; background:#fff; border:1px solid #e6e6e6; padding:12px; box-shadow:0 8px 24px rgba(11,78,215,0.08); border-radius:8px; display:none; z-index:120; }
+      .popover .close-x { position:absolute; top:6px; right:6px; width:26px; height:26px; display:flex; align-items:center; justify-content:center; border-radius:6px; background:transparent; border:none; color:#666; font-size:13px; line-height:1; padding:0; cursor:pointer; }
+      .popover .close-x:hover { background:#f2f4f8; color:#111; }
+      .popover.visible { display:block; }
+      .popover p { margin:6px 0 0; color:#333; font-size:13px; }
+      .popover code { background:#f6f8fb; padding:2px 6px; border-radius:4px; font-size:12px; }
+
+      button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: #ccc !important;
+  color: #666 !important;
+  border-color: #999 !important;
+}
+
+button.primary:disabled {
+  background-color: #8ab4f8 !important;
+  color: #fff !important;
+  opacity: 0.6;
+}
+
+button.ghost:disabled {
+  background-color: #f0f0f0 !important;
+  border-color: #ccc !important;
+  color: #999 !important;
+}
+    </style>
+  </head>
+  <body>
+    <h2>DSC Agent Control Panel</h2>
+
+    <div class="section">
+      <div class="row">
+        <label>Status</label>
+        <div class="inline"><span id="status-badge" class="badge warn">Unknown</span> <span id="status"></span></div>
+      </div>
+      <div class="row"><label>Controls</label> <div class="btn-row"><button id="btn-start" class="primary" >Start</button> <button id="btn-stop" class="ghost">Stop</button> <button id="btn-health" class="ghost">Health</button> <button id="btn-certs" class="ghost">Certificate</button></div></div>
+      <!-- <pre id="out"></pre> -->
+
+      <!-- show beautified json data -->
+      <div id="details-view" class="section" style="display:none">
+        <h3 id="details-title"></h3>
+        <div id="details-body"></div>
+
+        <!-- <details style="margin-top:10px">
+          <summary style="cursor:pointer;color:#555">Debug JSON</summary>
+          <pre id="details-raw"></pre>
+        </details> -->
+      </div>
+
+    </div>
+
+    <div class="section">
+      <h3>Configuration</h3>
+      <div class="row">
+        <label>Token:</label>
+        <div class="inline">
+          <select id="tokenName"></select>
+        </div>
+      </div>
+
+      <!-- <div class="row">
+        <label>PKCS11_DLL:</label>
+        <div class="inline"><input type="text" id="PKCS11_DLL" placeholder="Path to vendor/OpenSC PKCS#11" list="dll-presets" />
+        <button id="btn-browse" class="ghost">Browse...</button></div>
+      </div>
+      <datalist id="dll-presets"></datalist> -->
+      <div class="row">
+        <label>
+          Token Driver:
+          <button id="pkcs11-help" class="help-icon" aria-expanded="false" aria-controls="pkcs11-popover" title="PKCS#11 help">?</button>
+
+          <div id="pkcs11-popover" class="popover" role="dialog" aria-hidden="true">
+            <button id="pkcs11-help-close" class="close-x" aria-label="Close">✕</button>
+            <strong>Token Driver (PKCS#11)</strong>
+            <p style="margin:6px 0 6px;">Quick steps:</p>
+            <ul style="margin:4px 0 0 18px; padding:0; color:#333; font-size:13px;">
+              <li>Click <strong>Browse...</strong> to choose the module file from disk.</li>
+              <li>Or copy the full path and paste it into the field (Ctrl+V).</li>
+              <li>Try the presets list for common vendor modules.</li>
+            </ul>
+            <p style="margin:8px 0 0; color:#666; font-size:12px;">Windows example: <code>C:\Windows\System32\opensc-pkcs11.dll</code></p>
+            <!-- focus button removed per UX request -->
+          </div>
+        </label>
+        <div class="inline">
+          <input type="text" id="PKCS11_DLL" placeholder="Path to vendor/OpenSC PKCS#11" list="dll-presets" />
+          <button id="btn-browse" class="ghost">Browse...</button>
+        </div>
+      </div>
+      <datalist id="dll-presets"></datalist>
+
+      <!-- <div class="row"><label>Agent URL:</label> <span id="AGENT_URL"></span></div> -->
+      <div class="row"><label></label><button id="btn-save" class="primary">Save DLL Path</button></div>
+    </div>
+
+    <script src="index.js"></script>
+
+    <script>
+      (function(){
+        const btn = document.getElementById('pkcs11-help');
+        const pop = document.getElementById('pkcs11-popover');
+        const closeBtn = document.getElementById('pkcs11-help-close');
+        const focusBtn = document.getElementById('pkcs11-focus');
+        const inputField = document.getElementById('PKCS11_DLL');
+        if(!btn || !pop) return;
+        function open(){
+          pop.classList.add('visible');
+          btn.setAttribute('aria-expanded','true');
+          pop.setAttribute('aria-hidden','false');
+        }
+        function close(){
+          pop.classList.remove('visible');
+          btn.setAttribute('aria-expanded','false');
+          pop.setAttribute('aria-hidden','true');
+        }
+        btn.addEventListener('click', (e)=>{ e.stopPropagation(); pop.classList.contains('visible') ? close() : open(); });
+        closeBtn && closeBtn.addEventListener('click', (e)=>{ e.stopPropagation(); close(); });
+        focusBtn && focusBtn.addEventListener('click', (e)=>{ e.stopPropagation(); if(inputField) { inputField.focus(); inputField.select && inputField.select(); } });
+        document.addEventListener('click', (e)=>{ if(!pop.contains(e.target) && e.target !== btn) close(); });
+        window.addEventListener('keydown', (e)=>{ if(e.key === 'Escape') close(); });
+      })();
+    </script>
+  </body>
+  </html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
