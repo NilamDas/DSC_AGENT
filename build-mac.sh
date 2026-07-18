@@ -27,6 +27,11 @@ echo "==> Preparing output directories..."
 mkdir -p build-artifacts dist/agent
 mkdir -p electron-app/build-artifacts electron-app/runtime/electron
 
+echo ""
+echo "==> Provisioning bundled Node runtime..."
+mkdir -p electron-app/bin/mac
+cp "$(command -v node)" electron-app/bin/mac/node
+
 # ─── Agent: bundle → obfuscate ────────────────────────────────────────────────
 echo ""
 echo "==> Bundling agent..."
