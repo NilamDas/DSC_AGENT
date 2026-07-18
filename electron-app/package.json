@@ -20,37 +20,35 @@
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux"
   },
+  "dependencies": {
+    "bytenode": "^1.5.7"
+  },
   "devDependencies": {
     "@electron/fuses": "^2.1.1",
     "electron": "^29.3.0",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.27.3",
+    "javascript-obfuscator": "^5.3.0"
   },
   "build": {
     "appId": "com.example.dscagent",
     "productName": "DSC Agent",
     "afterPack": "scripts/apply-fuses.js",
     "files": [
-      "**/*",
-      "!build-artifacts/**"
+      "package.json",
+      "runtime/electron/**",
+      "renderer/**",
+      "assets/**"
     ],
     "extraResources": [
       {
-        "from": "../agent",
+        "from": "../dist/agent",
         "to": "agent",
         "filter": [
-          "**/*",
-          "!dsc-agent.js",
-          "!dsc-agent_09_10.js",
-          "!dsc-agent-all-working.js",
-          "!dsc-agent - batch working.js",
-          "!agen_backeup/**",
-          "!lib/**",
-          "!services/**"
+          "dsc-agent.loader.js",
+          "dsc-agent.jsc",
+          "dsc-agent.obf.js"
         ]
-      },
-      {
-        "from": "../build-artifacts/dsc-agent.obf.js",
-        "to": "agent/dsc-agent.js"
       },
       {
         "from": "..",
@@ -63,10 +61,6 @@
           "!electron-app/**",
           "!web-demo/**"
         ]
-      },
-      {
-        "from": "../dsc-agent.config.json",
-        "to": "dsc-agent.config.json"
       },
       {
         "from": "bin/win/",
@@ -99,7 +93,12 @@
     },
     "mac": {
       "icon": "assets/Mac/icon.png",
-      "category": "public.app-category.business"
+      "category": "public.app-category.business",
+      "identity": null,
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] },
+        { "target": "zip", "arch": ["x64", "arm64"] }
+      ]
     },
     "linux": {
       "icon": "assets/linux/icon.png",

@@ -46,7 +46,6 @@
         "to": "agent",
         "filter": [
           "dsc-agent.loader.js",
-          "dsc-agent.jsc",
           "dsc-agent.obf.js"
         ]
       },
@@ -96,8 +95,7 @@
       "category": "public.app-category.business",
       "identity": null,
       "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] },
-        { "target": "zip", "arch": ["x64", "arm64"] }
+        { "target": "dmg", "arch": ["x64", "arm64"] }
       ]
     },
     "linux": {

@@ -245,7 +245,7 @@ function createWindow() {
     show: false,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.obf.js'),
       contextIsolation: true,
       nodeIntegration: false,
     }

@@ -41,6 +41,14 @@ function resolveElectronBinary(appOutDir, platform, productName) {
 /** electron-builder calls this after packing, before creating the installer. */
 exports.default = async function afterPack(context) {
   const { appOutDir, electronPlatformName } = context;
+
+  // Skip fuses on macOS — modifying the binary invalidates its code signature
+  // causing EXC_BAD_ACCESS (SIGKILL (Code Signature Invalid)) on macOS 26+.
+  // Apple's own code signing provides sufficient protection on this platform.
+  if (electronPlatformName === 'darwin') {
+    console.log('[fuses] skipped on macOS');
+    return;
+  }
   const productName = context.packager.appInfo.productName;
   const electronPath = resolveElectronBinary(appOutDir, electronPlatformName, productName);
 
