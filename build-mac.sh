@@ -92,6 +92,12 @@ mkdir -p electron-app/build-artifacts electron-app/runtime/electron
 # ─── Agent: bundle → obfuscate → bytecode ─────────────────────────────────────
 # NOTE: esbuild is a compiled Go binary — run it directly, NOT through $NODE_BIN
 echo ""
+echo "==> Provisioning bundled Node runtime..."
+mkdir -p electron-app/bin/mac
+cp "$(command -v node)" electron-app/bin/mac/node
+
+# ─── Agent: bundle → obfuscate ────────────────────────────────────────────────
+echo ""
 echo "==> Bundling agent..."
 "$ROOT_ESBUILD" agent/dsc-agent.js \
   --bundle --platform=node --format=cjs --target=node18 \
