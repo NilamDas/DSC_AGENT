@@ -510,8 +510,11 @@ app.whenReady().then(() => {
 
   let iconPath;
   if (process.platform === 'darwin') {
+    // macOS tray icons must be a small "template image" (monochrome PNG ending with "Template").
+    // macOS adapts it to light/dark menu bar automatically. Using a colour PNG causes it to be
+    // invisible or missing on macOS 13+/Sequoia.
     const templatePath = path.join(__dirname, '..', '..', 'assets', 'Mac', 'iconTemplate.png');
-    const fallbackPath = path.join(__dirname, '..', '..', 'assets', 'Mac', 'icon-16x16.png');
+    const fallbackPath = path.join(__dirname, '..', '..', 'assets', 'Mac', 'icon.png');
     iconPath = fs.existsSync(templatePath) ? templatePath : fallbackPath;
   } else {
     iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
@@ -519,6 +522,12 @@ app.whenReady().then(() => {
 
   let icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
   if (process.platform === 'darwin') {
+    // macOS menu bar icons must be small (usually 16x16 or 22x22).
+    // If the provided image is larger (like a 512x512 app icon), it won't render in the menu bar.
+    const size = icon.getSize();
+    if (size.width > 22 || size.height > 22) {
+      icon = icon.resize({ width: 16, height: 16 });
+    }
     icon.setTemplateImage(true);
   }
   tray = new Tray(icon);

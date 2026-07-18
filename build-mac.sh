@@ -45,43 +45,31 @@ for f in "$ROOT_ESBUILD" "$ROOT_OBFUSCATOR" "$ELECTRON_BUILDER"; do
 done
 
 # ─── Resolve Node binary ───────────────────────────────────────────────────────
-# Use system Node if it matches the required major version, otherwise download
+# Always download a portable Node 18 matching Electron's bundled Node version.
+# The portable build is statically linked (no libnode.dylib dependency), so it
+# can be copied into the app bundle without missing shared libraries.
 echo ""
 echo "==> Resolving Node ${NODE_VERSION} (${NODE_ARCH})..."
 
-USE_SYSTEM_NODE=false
-if command -v node &>/dev/null; then
-  SYS_NODE_VER="$(node --version 2>/dev/null || true)"
-  SYS_NODE_MAJOR="$(echo "$SYS_NODE_VER" | sed 's/v//' | cut -d. -f1)"
-  if [ "$SYS_NODE_MAJOR" = "18" ]; then
-    USE_SYSTEM_NODE=true
-  fi
-fi
-
-if [ "$USE_SYSTEM_NODE" = true ]; then
-  NODE_BIN="$(command -v node)"
-  echo "    Using system Node: $NODE_BIN ($(node --version))"
+mkdir -p "$NODE_DIR"
+if [ ! -f "$NODE_BIN" ]; then
+  echo "    Downloading ${NODE_URL}..."
+  curl -L -o "/tmp/${NODE_TAR}" "$NODE_URL"
+  tar -xzf "/tmp/${NODE_TAR}" -C "$NODE_DIR" --strip-components=2 "node-v${NODE_VERSION}-darwin-${NODE_ARCH}/bin/node"
+  rm "/tmp/${NODE_TAR}"
+  chmod +x "$NODE_BIN"
+  echo "    Downloaded: $NODE_BIN"
 else
-  mkdir -p "$NODE_DIR"
-  if [ ! -f "$NODE_BIN" ]; then
-    echo "    Downloading ${NODE_URL}..."
-    curl -L -o "/tmp/${NODE_TAR}" "$NODE_URL"
-    tar -xzf "/tmp/${NODE_TAR}" -C "$NODE_DIR" --strip-components=2 "node-v${NODE_VERSION}-darwin-${NODE_ARCH}/bin/node"
-    rm "/tmp/${NODE_TAR}"
-    chmod +x "$NODE_BIN"
-    echo "    Downloaded: $NODE_BIN"
-  else
-    echo "    Already exists: $NODE_BIN"
-  fi
-
-  # Verify the downloaded Node works
-  "$NODE_BIN" --version > /dev/null 2>&1 || {
-    echo "ERROR: Downloaded Node binary is not executable or broken: $NODE_BIN"
-    rm -f "$NODE_BIN"
-    exit 1
-  }
-  echo "    Node version: $("$NODE_BIN" --version)"
+  echo "    Already exists: $NODE_BIN"
 fi
+
+# Verify the downloaded Node works
+"$NODE_BIN" --version > /dev/null 2>&1 || {
+  echo "ERROR: Downloaded Node binary is not executable or broken: $NODE_BIN"
+  rm -f "$NODE_BIN"
+  exit 1
+}
+echo "    Node version: $("$NODE_BIN" --version)"
 
 # ─── Prepare output directories ────────────────────────────────────────────────
 echo ""
@@ -94,7 +82,8 @@ mkdir -p electron-app/build-artifacts electron-app/runtime/electron
 echo ""
 echo "==> Provisioning bundled Node runtime..."
 mkdir -p electron-app/bin/mac
-cp "$(command -v node)" electron-app/bin/mac/node
+# $NODE_BIN already IS electron-app/bin/mac/node (downloaded above), so no copy needed.
+# The portable Node 18 build is statically linked and has no libnode.dylib dependency.
 
 # ─── Agent: bundle → obfuscate ────────────────────────────────────────────────
 echo ""
