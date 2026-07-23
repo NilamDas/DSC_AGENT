@@ -23,19 +23,27 @@
     });
   }
 
-  async function discover(timeoutMs = 6000, ports = DEFAULT_PORTS) {
-    for (const p of ports) {
-      try {
+  async function discover(timeoutMs = 800, ports = DEFAULT_PORTS, startupWaitMs = 20000) {
+    const deadline = Date.now() + Math.max(0, startupWaitMs);
+    do {
+      for (const p of ports) {
         const ctl = new AbortController();
-        const t = setTimeout(() => ctl.abort(), timeoutMs);
-        const r = await fetch(`http://127.0.0.1:${p}/health`, { signal: ctl.signal, credentials: 'include' });
-        clearTimeout(t);
-        if (r.ok) {
-          await r.json().catch(() => ({}));
-          return createClient(`http://127.0.0.1:${p}`);
+        const timer = setTimeout(() => ctl.abort(), timeoutMs);
+        try {
+          const r = await fetch(`http://127.0.0.1:${p}/health`, { signal: ctl.signal, credentials: 'include' });
+          if (r.ok) {
+            await r.json().catch(() => ({}));
+            return createClient(`http://127.0.0.1:${p}`);
+          }
+        } catch (_) {
+        } finally {
+          clearTimeout(timer);
         }
-      } catch (_) {}
-    }
+      }
+      if (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(500, deadline - Date.now())));
+      }
+    } while (Date.now() < deadline);
     throw new Error('DSC Agent not found on localhost. Make sure it is running.');
   }
 

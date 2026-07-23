@@ -114,7 +114,7 @@ function normalizePath(p) {
 
 // Retry helper for token fetches ------------------------------------------------->
 
-async function fetchTokensWithRetry(base, headers, attempts = 5, delayMs = 250) {
+async function fetchTokensWithRetry(base, headers, attempts = 15, delayMs = 300) {
   for (let i = 0; i < attempts; i++) {
     try {
       const rt = await fetch(base + '/tokens', { headers });
@@ -122,7 +122,7 @@ async function fetchTokensWithRetry(base, headers, attempts = 5, delayMs = 250) 
       return await rt.json();
     } catch (err) {
       if (i === attempts - 1) throw err;
-      const waitMs = delayMs * (i + 1);
+      const waitMs = Math.min(delayMs * (2 ** i), 2000);
       console.warn(`fetch /tokens failed (attempt ${i + 1}/${attempts}): ${err}. Retrying in ${waitMs}ms`);
       await new Promise(r => setTimeout(r, waitMs));
     }
@@ -226,7 +226,7 @@ async function load() {
 
   updateAgentUrl();
   try { refreshStatus(); } catch {}
-  try { setInterval(refreshStatus, 2000); } catch {}
+  try { setInterval(refreshStatus, 5000); } catch {}
   try {
     const r = await window.DSC.getDllPresets();
     if (r && r.ok && r.presets) {
@@ -266,7 +266,7 @@ async function load() {
     // }
 
     // retrying fetch to handle agent startup delays
-    const j = await fetchTokensWithRetry(base, headers, 5, 250);
+    const j = await fetchTokensWithRetry(base, headers);
     tokenState.tokens = Array.isArray(j.tokens) ? j.tokens : [];
     renderTokenDropdown(j);
     

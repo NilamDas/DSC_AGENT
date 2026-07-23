@@ -95,7 +95,7 @@
       "category": "public.app-category.business",
       "identity": null,
       "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] }
+        "dmg"
       ]
     },
     "linux": {

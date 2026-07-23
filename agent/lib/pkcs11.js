@@ -132,6 +132,19 @@ function probePair(p11, s, privHandle, certDER) {
 
 function detectSigningKey(dll, pin) {
   return withSession(dll, pin, (p11, s) => {
+    let tokenSerial = '';
+    try {
+      const sessionInfo = p11.C_GetSessionInfo(s);
+      const slot = sessionInfo && (sessionInfo.slotID || sessionInfo.slotId || sessionInfo.slot);
+      if (slot) {
+        const tokenInfo = p11.C_GetTokenInfo(slot);
+        const rawSerial = tokenInfo && tokenInfo.serialNumber;
+        tokenSerial = Buffer.isBuffer(rawSerial)
+          ? rawSerial.toString('utf8').trim()
+          : String(rawSerial || '').trim();
+      }
+    } catch {}
+
     const privs = listObjects(p11, s, [{ type: PKCS11.CKA_CLASS, value: PKCS11.CKO_PRIVATE_KEY }], 50)
       .map(h => ({ handle:h, id:getAttr(p11,s,h,PKCS11.CKA_ID), label:getAttr(p11,s,h,PKCS11.CKA_LABEL) }))
       .filter(x=>x.id)
@@ -153,7 +166,7 @@ function detectSigningKey(dll, pin) {
 
     for (const pair of pairs) {
       const res = probePair(p11, s, pair.priv.handle, pair.certDER);
-      if (res.ok) return { idHex: pair.idHex, certDER: pair.certDER };
+      if (res.ok) return { idHex: pair.idHex, certDER: pair.certDER, tokenSerial };
     }
     throw new Error('No usable signing key (probe failed)');
   });

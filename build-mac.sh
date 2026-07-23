@@ -19,8 +19,8 @@ NODE_VERSION="18.20.4"          # Must match Electron's bundled Node version
 BUILD_ARCH="$(uname -m)"        # Current build machine arch: arm64 or x86_64
 
 case "$BUILD_ARCH" in
-  x86_64) NODE_ARCH="x64"  ;;
-  arm64)  NODE_ARCH="arm64" ;;
+  x86_64) NODE_ARCH="x64"; ELECTRON_ARCH_FLAG="--x64" ;;
+  arm64)  NODE_ARCH="arm64"; ELECTRON_ARCH_FLAG="--arm64" ;;
   *)      echo "Unsupported architecture: $BUILD_ARCH"; exit 1 ;;
 esac
 
@@ -52,6 +52,16 @@ echo ""
 echo "==> Resolving Node ${NODE_VERSION} (${NODE_ARCH})..."
 
 mkdir -p "$NODE_DIR"
+if [ -f "$NODE_BIN" ]; then
+  NODE_FILE_INFO="$(file "$NODE_BIN" 2>/dev/null || true)"
+  if [ "$NODE_ARCH" = "arm64" ] && ! echo "$NODE_FILE_INFO" | grep -qi "arm64"; then
+    echo "    Existing Node is not arm64; replacing it."
+    rm -f "$NODE_BIN"
+  elif [ "$NODE_ARCH" = "x64" ] && ! echo "$NODE_FILE_INFO" | grep -Eqi "x86_64|x86-64"; then
+    echo "    Existing Node is not x64; replacing it."
+    rm -f "$NODE_BIN"
+  fi
+fi
 if [ ! -f "$NODE_BIN" ]; then
   echo "    Downloading ${NODE_URL}..."
   curl -L -o "/tmp/${NODE_TAR}" "$NODE_URL"
@@ -118,11 +128,7 @@ echo ""
 echo "==> Staging Electron sources..."
 "$NODE_BIN" -e "
   const fs = require('fs');
-  let src = fs.readFileSync('electron-app/main/pinPromptServer.js', 'utf8');
-  src = src.replace(
-    \"require('path').join(__dirname, '..', 'renderer', 'pin.html')\",
-    \"require('path').join(__dirname, '..', '..', 'renderer', 'pin.html')\"
-  );
+  const src = fs.readFileSync('electron-app/main/pinPromptServer.js', 'utf8');
   fs.writeFileSync('electron-app/build-artifacts/pinPromptServer.bytecode-point.js', src, 'ascii');
 "
 
@@ -182,7 +188,7 @@ cp electron-app/package.json-bytecode-point electron-app/package.json
 # Run electron-builder from inside electron-app/ so all relative paths resolve correctly.
 pushd electron-app > /dev/null
 CSC_IDENTITY_AUTO_DISCOVERY=false \
-  "$ELECTRON_BUILDER" --mac || {
+  "$ELECTRON_BUILDER" --mac "$ELECTRON_ARCH_FLAG" || {
     popd > /dev/null
     mv "$REPO_ROOT/electron-app/package.json.bak" "$REPO_ROOT/electron-app/package.json"
     echo "electron-builder failed"
