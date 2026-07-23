@@ -118,11 +118,7 @@ echo ""
 echo "==> Staging Electron sources..."
 "$NODE_BIN" -e "
   const fs = require('fs');
-  let src = fs.readFileSync('electron-app/main/pinPromptServer.js', 'utf8');
-  src = src.replace(
-    \"require('path').join(__dirname, '..', 'renderer', 'pin.html')\",
-    \"require('path').join(__dirname, '..', '..', 'renderer', 'pin.html')\"
-  );
+  const src = fs.readFileSync('electron-app/main/pinPromptServer.js', 'utf8');
   fs.writeFileSync('electron-app/build-artifacts/pinPromptServer.bytecode-point.js', src, 'ascii');
 "
 
