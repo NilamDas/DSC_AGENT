@@ -163,6 +163,8 @@ function respondSigningError(res, err) {
 const waitFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function promptPinEnsuringToken(dll, promptMessage, tokenMissingMessage, options = {}) {
+  const startedAt = Date.now();
+  console.log(`[pin-timing ${new Date().toISOString()}] token precheck started`);
   try {
     ensureTokenReady(dll);
   } catch (err) {
@@ -174,8 +176,13 @@ async function promptPinEnsuringToken(dll, promptMessage, tokenMissingMessage, o
     throw err;
   }
 
+  console.log(`[pin-timing ${new Date().toISOString()}] token precheck completed durationMs=${Date.now() - startedAt}`);
+  const promptStartedAt = Date.now();
+  console.log(`[pin-timing ${new Date().toISOString()}] prompt request started`);
   const pin = await promptPinInteractive(promptMessage);
+  console.log(`[pin-timing ${new Date().toISOString()}] prompt completed durationMs=${Date.now() - promptStartedAt}`);
 
+  const postCheckStartedAt = Date.now();
   try {
     ensureTokenReady(dll);
   } catch (err) {
@@ -186,6 +193,7 @@ async function promptPinEnsuringToken(dll, promptMessage, tokenMissingMessage, o
     }
     throw err;
   }
+  console.log(`[pin-timing ${new Date().toISOString()}] token postcheck completed durationMs=${Date.now() - postCheckStartedAt}`);
 
   return pin;
 }
@@ -1978,8 +1986,6 @@ app.post('/sign/text', requireAuth, async (req, res) => {
     const signingTime2 = new Date();
 
     const { dll } = ensureDllPicked();
-    // Ensure DSC token is present before proceeding
-    try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
     let pin = (req.body && req.body.pin) || DSC_PIN_ENV || '';
     if (!pin && SESSION_PIN) pin = SESSION_PIN;
     let requirePin = (req.body && req.body.requirePin === true) || REQUIRE_PIN_PER_SIGN;
@@ -1991,6 +1997,8 @@ app.post('/sign/text', requireAuth, async (req, res) => {
       } catch (e) {
         return res.status(400).json({ ok: false, message: e.message || 'PIN required' });
       }
+    } else {
+      try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
     }
     if (req.body && req.body.rememberSessionPin === false) SESSION_PIN = '';
     if (!pin) return res.status(400).json({ ok: false, message: 'PIN is required' });
@@ -2044,8 +2052,6 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
   try {
 
     const { dll } = ensureDllPicked();
-    // Ensure DSC token is present before proceeding
-    try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
     let pin = (req.body && req.body.pin) || DSC_PIN_ENV || '';
     if (!pin && SESSION_PIN) pin = SESSION_PIN;
     let requirePin = (req.body && req.body.requirePin === true) || REQUIRE_PIN_PER_SIGN;
@@ -2058,6 +2064,8 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
       } catch (e) {
         return res.status(400).json({ ok: false, message: e.message || 'PIN required' });
       }
+    } else {
+      try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
     }
 
     if (req.body && req.body.rememberSessionPin === false) SESSION_PIN = '';
@@ -2228,8 +2236,6 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
     const signRequestId = 'sign-batch-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
 
     const { dll } = ensureDllPicked();
-    // Ensure DSC token is present before proceeding
-    try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
     const arr = req.body && Array.isArray(req.body.pdfs) ? req.body.pdfs : null;
     if (!arr || !arr.length) return res.status(400).json({ ok: false, message: 'pdfs[] missing' });
 
@@ -2248,6 +2254,8 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
       } catch (e) {
         return res.status(400).json({ ok: false, message: e.message || 'PIN required' });
       }
+    } else {
+      try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
     }
     if (req.body && req.body.rememberSessionPin === false) {
       SESSION_PIN = '';
@@ -2480,8 +2488,6 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
     const signRequestId = 'sign-resign-flatten-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
 
     const { dll } = ensureDllPicked();
-    // Ensure DSC token is present before proceeding
-    try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
 
     // PIN resolution (reuse session PIN if present)
     let pin = (req.body && req.body.pin) || DSC_PIN_ENV || '';
@@ -2499,6 +2505,8 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
       } catch (e) {
         return res.status(400).json({ ok: false, message: e.message || 'PIN required' });
       }
+    } else {
+      try { ensureTokenReady(dll); } catch (e) { return respondSigningError(res, e); }
     }
     if (req.body && req.body.rememberSessionPin === false) {
       SESSION_PIN = '';

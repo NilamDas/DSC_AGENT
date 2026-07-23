@@ -211,10 +211,6 @@ try {
 
   Write-Step 'Staging bytecode-safe Electron sources'
   $pinSourceText = Get-Content -LiteralPath $electronPinSource -Raw
-  $pinSourceText = $pinSourceText.Replace(
-    "require('path').join(__dirname, '..', 'renderer', 'pin.html')",
-    "require('path').join(__dirname, '..', '..', 'renderer', 'pin.html')"
-  )
   Write-AsciiFile -Path $stagedPinSource -Content $pinSourceText
 
   Write-Step 'Bundling Electron main process'
