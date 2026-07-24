@@ -5,6 +5,8 @@ const asn1js = require('asn1js');
 
 const A_SHA256 = Buffer.from([0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20]);
 const di256 = (h) => Buffer.concat([A_SHA256, h]);
+const VERIFIED_KEY_CACHE_MS = 5 * 60 * 1000;
+const verifiedKeyCache = new Map();
 
 function tryPick(candidates) {
   let fallback = null;
@@ -130,8 +132,49 @@ function probePair(p11, s, privHandle, certDER) {
   return { ok:false };
 }
 
+function getTokenSerial(p11, session) {
+  try {
+    const sessionInfo = p11.C_GetSessionInfo(session);
+    const slot = sessionInfo && (sessionInfo.slotID || sessionInfo.slotId || sessionInfo.slot);
+    if (!slot) return '';
+    const tokenInfo = p11.C_GetTokenInfo(slot);
+    const rawSerial = tokenInfo && tokenInfo.serialNumber;
+    return Buffer.isBuffer(rawSerial)
+      ? rawSerial.toString('utf8').trim()
+      : String(rawSerial || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function clearSigningKeyCache(dll) {
+  if (dll) verifiedKeyCache.delete(dll);
+  else verifiedKeyCache.clear();
+}
+
 function detectSigningKey(dll, pin) {
   return withSession(dll, pin, (p11, s) => {
+    const tokenSerial = getTokenSerial(p11, s);
+    const cached = tokenSerial ? verifiedKeyCache.get(dll) : null;
+    if (
+      cached
+      && cached.tokenSerial === tokenSerial
+      && (Date.now() - cached.verifiedAt) < VERIFIED_KEY_CACHE_MS
+    ) {
+      const cachedPrivateKeys = listObjects(p11, s, [
+        { type: PKCS11.CKA_CLASS, value: PKCS11.CKO_PRIVATE_KEY },
+        { type: PKCS11.CKA_ID, value: Buffer.from(cached.idHex, 'hex') },
+      ], 1);
+      if (cachedPrivateKeys.length) {
+        return {
+          idHex: cached.idHex,
+          certDER: Buffer.from(cached.certDER),
+          tokenSerial,
+        };
+      }
+      verifiedKeyCache.delete(dll);
+    }
+
     const privs = listObjects(p11, s, [{ type: PKCS11.CKA_CLASS, value: PKCS11.CKO_PRIVATE_KEY }], 50)
       .map(h => ({ handle:h, id:getAttr(p11,s,h,PKCS11.CKA_ID), label:getAttr(p11,s,h,PKCS11.CKA_LABEL) }))
       .filter(x=>x.id)
@@ -153,7 +196,17 @@ function detectSigningKey(dll, pin) {
 
     for (const pair of pairs) {
       const res = probePair(p11, s, pair.priv.handle, pair.certDER);
-      if (res.ok) return { idHex: pair.idHex, certDER: pair.certDER };
+      if (res.ok) {
+        if (tokenSerial) {
+          verifiedKeyCache.set(dll, {
+            tokenSerial,
+            idHex: pair.idHex,
+            certDER: Buffer.from(pair.certDER),
+            verifiedAt: Date.now(),
+          });
+        }
+        return { idHex: pair.idHex, certDER: pair.certDER, tokenSerial };
+      }
     }
     throw new Error('No usable signing key (probe failed)');
   });
@@ -174,6 +227,7 @@ module.exports = {
   bufToHex,
   hexEq,
   detectSigningKey,
+  clearSigningKeyCache,
 };
 
 // New: list key/cert pairs for UI selection (best-effort without login)

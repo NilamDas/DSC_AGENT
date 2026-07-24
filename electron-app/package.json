@@ -31,7 +31,8 @@
     "afterPack": "scripts/apply-fuses.js",
     "files": [
       "**/*",
-      "!build-artifacts/**"
+      "!build-artifacts/**",
+      "!bin/**"
     ],
     "extraResources": [
       {
@@ -56,42 +57,32 @@
         "from": "..",
         "to": "agent",
         "filter": [
-          "dsc-agent.config.json",
-          "package.json",
-          "package-lock.json",
-          "node_modules/**",
-          "!electron-app/**",
-          "!web-demo/**"
+          "dsc-agent.config.json"
+        ]
+      },
+      {
+        "from": "../node_modules/pkcs11js",
+        "to": "agent/node_modules/pkcs11js",
+        "filter": [
+          "**/*"
         ]
       },
       {
         "from": "../dsc-agent.config.json",
         "to": "dsc-agent.config.json"
-      },
-      {
-        "from": "bin/win/",
-        "to": "bin/win/",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "bin/mac/",
-        "to": "bin/mac/",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "bin/linux/",
-        "to": "bin/linux/",
-        "filter": [
-          "**/*"
-        ]
       }
     ],
     "win": {
       "icon": "assets/windows/icon.ico",
+      "extraResources": [
+        {
+          "from": "bin/win/",
+          "to": "bin/win/",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ],
       "target": [
         "nsis",
         "portable"
@@ -99,10 +90,28 @@
     },
     "mac": {
       "icon": "assets/Mac/icon.png",
-      "category": "public.app-category.business"
+      "category": "public.app-category.business",
+      "extraResources": [
+        {
+          "from": "bin/mac/",
+          "to": "bin/mac/",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     },
     "linux": {
       "icon": "assets/linux/icon.png",
+      "extraResources": [
+        {
+          "from": "bin/linux/",
+          "to": "bin/linux/",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ],
       "target": [
         "AppImage",
         "deb",

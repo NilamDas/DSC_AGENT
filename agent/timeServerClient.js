@@ -4,6 +4,7 @@
  * Thin client for time-server health and signing authorization endpoints.
  */
 
+const http = require('http');
 const https = require('https');
 
 let DEFAULT_BASE_URL = 'https://103.158.204.86';
@@ -12,6 +13,17 @@ let DEFAULT_TIME_FIELD = 'time';
 let DEFAULT_ALLOW_SELF_SIGNED = false;
 
 const DEFAULT_TIMEOUT_MS = 3000;
+const httpAgent = new http.Agent({ keepAlive: true });
+let httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: true });
+
+function resetHttpsAgent() {
+  const previous = httpsAgent;
+  httpsAgent = new https.Agent({
+    keepAlive: true,
+    rejectUnauthorized: !DEFAULT_ALLOW_SELF_SIGNED,
+  });
+  try { previous.destroy(); } catch {}
+}
 
 /**
  * Override the base URL / method / time-field at startup (called from dsc-agent.js after config is loaded).
@@ -27,7 +39,11 @@ function configure({ baseUrl, method, timeField, allowSelfSigned } = {}) {
     DEFAULT_TIME_FIELD = timeField.trim();
   }
   if (allowSelfSigned !== undefined) {
-    DEFAULT_ALLOW_SELF_SIGNED = !!allowSelfSigned;
+    const nextAllowSelfSigned = !!allowSelfSigned;
+    if (nextAllowSelfSigned !== DEFAULT_ALLOW_SELF_SIGNED) {
+      DEFAULT_ALLOW_SELF_SIGNED = nextAllowSelfSigned;
+      resetHttpsAgent();
+    }
   }
 }
 
@@ -36,26 +52,34 @@ function sleep(ms) {
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const fetchOptions = { ...options, signal: controller.signal };
-  // Allow self-signed / untrusted HTTPS certs when configured.
-  // Node 18+ native fetch (undici) uses 'dispatcher', not 'agent'.
-  if (DEFAULT_ALLOW_SELF_SIGNED && url.startsWith('https://')) {
-    try {
-      const { Agent } = require('undici');
-      fetchOptions.dispatcher = new Agent({ connect: { rejectUnauthorized: false } });
-    } catch {
-      // Fallback for node-fetch-based environments
-      fetchOptions.agent = new https.Agent({ rejectUnauthorized: false });
-    }
-  }
-  try {
-    const res = await fetch(url, fetchOptions);
-    return res;
-  } finally {
-    clearTimeout(timer);
-  }
+  const target = new URL(url);
+  const transport = target.protocol === 'https:' ? https : http;
+  const agent = target.protocol === 'https:' ? httpsAgent : httpAgent;
+  return new Promise((resolve, reject) => {
+    const req = transport.request(target, {
+      method: options.method || 'GET',
+      headers: options.headers || {},
+      agent,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const status = Number(res.statusCode || 0);
+        resolve({
+          ok: status >= 200 && status < 300,
+          status,
+          statusText: res.statusMessage || '',
+          text: async () => Buffer.concat(chunks).toString('utf8'),
+        });
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Time server request timed out after ${timeoutMs}ms`));
+    });
+    req.on('error', reject);
+    if (options.body) req.write(options.body);
+    req.end();
+  });
 }
 
 async function requestJson(path, { method = 'GET', headers = {}, body, timeoutMs, retries = 1, retryDelayMs = 300 } = {}) {

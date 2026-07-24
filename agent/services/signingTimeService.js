@@ -63,7 +63,7 @@ async function createSigningAuthorization(params = {}, deps = {}) {
   }
   try {
     const response = await timeServerClient.createAuthorization(apiKey, payload, {
-      endpoint: '/api/time',
+      endpoint: params.endpoint || '/api/time',
       timeoutMs: 5000,
       retries: 0,
     });
