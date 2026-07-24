@@ -942,7 +942,7 @@ async function extractPreviousSignerLines(pdfBytes) {
             let pidx = 0;
             let foundPage = false;
             try {
-              const pref = widget.lookup(PDFName.of('P'));
+              const pref = widget.get ? widget.get(PDFName.of('P')) : null;
               const key = pageKey(pref);
               if (pageMap.has(key)) {
                 pidx = pageMap.get(key);
@@ -956,7 +956,7 @@ async function extractPreviousSignerLines(pdfBytes) {
                   const annots = pages[i].node.lookupMaybe ? pages[i].node.lookupMaybe(PDFName.of('Annots')) : null;
                   if (annots && annots.size && annots.get) {
                     for (let j = 0; j < annots.size(); j++) {
-                      if (annots.get(j) && annots.get(j).toString && widget && widget.ref && annots.get(j).toString() === widget.ref.toString()) {
+                      if (pdfRefEquals(annots.get(j), wref)) {
                         pidx = i;
                         foundPage = true;
                         break;
@@ -964,7 +964,7 @@ async function extractPreviousSignerLines(pdfBytes) {
                     }
                   } else if (annots && annots.array) {
                     for (const r of annots.array) {
-                      if (r && r.toString && widget && widget.ref && r.toString() === widget.ref.toString()) {
+                      if (pdfRefEquals(r, wref)) {
                         pidx = i;
                         foundPage = true;
                         break;
@@ -2495,7 +2495,7 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
     const includeESS = req.body && req.body.includeESS !== undefined ? !!req.body.includeESS : true;
     const embedIntermediates = req.body && req.body.embedIntermediates !== undefined ? !!req.body.embedIntermediates : false;
     const useViewerAppearance = !!(req.body && req.body.useViewerAppearance === true);
-    const stampPrevious = !!(req.body && req.body.stampPrevious === true);
+    const stampPrevious = !(req.body && req.body.stampPrevious === false);
     // Accept rect as [x1,y1,x2,y2] or top-left as [left, top]
     const rectOverride = (req.body && Array.isArray(req.body.rect) && (req.body.rect.length === 4 || req.body.rect.length === 2))
       ? req.body.rect.map((n) => parseInt(n, 10))
@@ -2529,25 +2529,56 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
       try { const perms = dstDoc.catalog.lookupMaybe ? dstDoc.catalog.lookupMaybe(PDFName.of('Perms')) : null; if (perms && perms.delete) perms.delete(PDFName.of('DocMDP')); } catch { }
       try { if (dstDoc.catalog.delete) dstDoc.catalog.delete(PDFName.of('AcroForm')); } catch { }
 
-      // Redraw previous signer text (opt-in)
+      // Preserve previous signatures as non-clickable page-content stamps.
       if (stampPrevious && Array.isArray(prevBoxes) && prevBoxes.length) {
         const helv = await dstDoc.embedFont(StandardFonts.Helvetica);
-        if (dstDoc.getPageCount() === 1) {
-          const padX = 6, padY = 6; const fontSize = 10; const lh = 14;
-          const fit = (t, maxW) => { let s = String(t || ''); while (helv.widthOfTextAtSize(s, fontSize) > maxW && s.length > 1) s = s.slice(0, -1); return s; };
-          const fmt = (mstr) => { try { const m = /(?:D:)?(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?/.exec(mstr || ''); if (!m) return ''; const [, y, mo, d, h, mi, se = '00'] = m; return `${y}-${mo}-${d} ${h}:${mi}:${se}`; } catch { return ''; } };
-          for (const box of prevBoxes) {
-            const idx = Math.max(0, Math.min(dstDoc.getPageCount() - 1, box.pageIndex || 0));
-            //console.log('[pdf-resign-flatten] Stamping previous sig text on page', (idx+1), 'box:', box);
-            const page = dstDoc.getPage(idx);
-            const [x1, y1, x2, y2] = box.rect.map(n => Number(n) || 0);
-            const maxW = Math.max(0, (Math.max(0, x2 - x1) - padX * 2));
-            const nameLine = `Digitally signed by ${box.name || 'Unknown'}`;
-            const dateLine = box.when ? `Date: ${fmt(box.when)}` : '';
-            const line1Fit = fit(nameLine, maxW);
-            const line2Fit = fit(dateLine, maxW);
-            page.drawText(line1Fit, { x: x1 + padX, y: y1 + Math.max(0, (y2 - y1) - padY - fontSize), size: fontSize, font: helv });
-            if (line2Fit) page.drawText(line2Fit, { x: x1 + padX, y: y1 + Math.max(0, (y2 - y1) - padY - fontSize - lh), size: fontSize, font: helv });
+        const padX = 6, padY = 6; const fontSize = 10; const lh = 14;
+        const fit = (text, maxWidth) => {
+          let fitted = String(text || '');
+          while (helv.widthOfTextAtSize(fitted, fontSize) > maxWidth && fitted.length > 1) fitted = fitted.slice(0, -1);
+          return fitted;
+        };
+        const formatPdfDate = (value) => {
+          try {
+            const match = /(?:D:)?(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?/.exec(value || '');
+            if (!match) return '';
+            const [, year, month, day, hour, minute, second = '00'] = match;
+            return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+          } catch {
+            return '';
+          }
+        };
+        for (const box of prevBoxes) {
+          if (!box || !Array.isArray(box.rect) || box.rect.length !== 4) continue;
+          const pageIndex = Math.max(0, Math.min(dstDoc.getPageCount() - 1, Number(box.pageIndex) || 0));
+          const page = dstDoc.getPage(pageIndex);
+          const [rawX1, rawY1, rawX2, rawY2] = box.rect.map((value) => Number(value) || 0);
+          const x1 = Math.min(rawX1, rawX2);
+          const y1 = Math.min(rawY1, rawY2);
+          const x2 = Math.max(rawX1, rawX2);
+          const y2 = Math.max(rawY1, rawY2);
+          const width = Math.max(1, x2 - x1);
+          const height = Math.max(1, y2 - y1);
+          const maxTextWidth = Math.max(0, width - padX * 2);
+          const nameLine = fit(`Digitally signed by ${box.name || 'Unknown'}`, maxTextWidth);
+          const formattedDate = formatPdfDate(box.when);
+          const dateLine = formattedDate ? fit(`Date: ${formattedDate}`, maxTextWidth) : '';
+          page.drawRectangle({ x: x1, y: y1, width, height, color: rgb(1, 1, 1), opacity: 1, borderOpacity: 0 });
+          page.drawText(nameLine, {
+            x: x1 + padX,
+            y: y1 + Math.max(0, height - padY - fontSize),
+            size: fontSize,
+            font: helv,
+            color: rgb(0, 0, 0),
+          });
+          if (dateLine) {
+            page.drawText(dateLine, {
+              x: x1 + padX,
+              y: y1 + Math.max(0, height - padY - fontSize - lh),
+              size: fontSize,
+              font: helv,
+              color: rgb(0, 0, 0),
+            });
           }
         }
       }
