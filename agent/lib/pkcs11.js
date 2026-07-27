@@ -50,6 +50,32 @@ function getKnownTokenCandidates(name) {
   return (t && Array.isArray(t.paths)) ? t.paths.slice() : [];
 }
 
+function probeTokenModule(dll) {
+  const fs = require('fs');
+  const status = { path: dll, exists: false, loadable: false, connected: false };
+  if (!dll || !fs.existsSync(dll)) return status;
+
+  status.exists = true;
+  const p11 = new PKCS11.PKCS11();
+  let initialized = false;
+  try {
+    p11.load(dll);
+    p11.C_Initialize();
+    initialized = true;
+    status.loadable = true;
+    const slots = p11.C_GetSlotList(true) || [];
+    status.connected = slots.length > 0;
+    status.slotCount = slots.length;
+  } catch {
+    status.connected = false;
+  } finally {
+    if (initialized) {
+      try { p11.C_Finalize(); } catch {}
+    }
+  }
+  return status;
+}
+
 function getSlotHandle(p11, needToken = true) {
   let slots = [];
   try { slots = p11.C_GetSlotList(needToken) || []; } catch { slots = []; }
@@ -220,6 +246,7 @@ module.exports = {
   pickModule,
   pickFromCandidates,
   getKnownTokenCandidates,
+  probeTokenModule,
   ensureDllPicked,
   withSession,
   listObjects,

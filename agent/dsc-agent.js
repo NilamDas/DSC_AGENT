@@ -1810,10 +1810,33 @@ app.get('/tokens', requireAuth, (req, res) => {
   try {
     const map = cfg.KNOWN_TOKENS || {};
     const fs = require('fs');
-    const tokens = Object.keys(map).map((name) => ({
-      name,
-      candidates: (map[name].paths || []).map((p) => ({ path: p, exists: fs.existsSync(p) })),
-    }));
+    const statusByPath = new Map();
+    const probe = (candidatePath) => {
+      const key = String(candidatePath || '').replace(/\\/g, '/').toLowerCase();
+      if (!statusByPath.has(key)) {
+        statusByPath.set(key, pkcs11lib.probeTokenModule(candidatePath));
+      }
+      return statusByPath.get(key);
+    };
+    const tokens = Object.keys(map).map((name) => {
+      const candidates = (map[name].paths || []).map((candidatePath) => ({
+        path: candidatePath,
+        exists: fs.existsSync(candidatePath),
+        loadable: false,
+        connected: false,
+      }));
+      for (const candidate of candidates) {
+        if (!candidate.exists) continue;
+        Object.assign(candidate, probe(candidate.path));
+        if (candidate.loadable) break;
+      }
+      return {
+        name,
+        installed: candidates.some((candidate) => candidate.exists),
+        connected: candidates.some((candidate) => candidate.connected),
+        candidates,
+      };
+    });
     res.json({ ok: true, selected: { tokenName: USER_SELECTED_TOKEN, dll: USER_SELECTED_DLL }, tokens });
   } catch (e) {
     res.status(500).json({ ok: false, message: e.message });
