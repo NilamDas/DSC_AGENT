@@ -63,6 +63,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "../node_modules/bytenode",
+        "to": "agent/node_modules/bytenode",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
