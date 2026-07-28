@@ -205,8 +205,6 @@ async function promptPinEnsuringToken(dll, promptMessage, tokenMissingMessage, o
 
   console.log(`[pin-timing] token-check-ms=${Date.now() - tokenCheckStartedAt}`);
   const promptStartedAt = Date.now();
-  console.log(`[pin-timing ${new Date().toISOString()}] token precheck completed durationMs=${Date.now() - startedAt}`);
-  const promptStartedAt = Date.now();
   console.log(`[pin-timing ${new Date().toISOString()}] prompt request started`);
   const pin = await promptPinInteractive(promptMessage);
   console.log(`[pin-timing] prompt-ms=${Date.now() - promptStartedAt}`);
