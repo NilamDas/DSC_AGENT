@@ -81,11 +81,21 @@ function updateSelectedTokenConnection(dll, connected) {
   renderTokenDropdown({ selected: { tokenName: tokenState.selected } }, false);
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 2500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function refreshStatus() {
   try {
     const port = (settings.DSC_AGENT_PORT || '').trim() || '18080';
     const base = `http://127.0.0.1:${port}`;
-    const r = await fetch(base + '/health');
+    const r = await fetchWithTimeout(base + '/health');
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     const currentTokenState = j.slotPresent ? 'present' : 'absent';
@@ -622,8 +632,8 @@ document.getElementById('btn-start').addEventListener('click', async () => {
   if (btnStart) btnStart.disabled = true;
   if (btnStop) btnStop.disabled = true;  // disable Stop while starting
   try {
-    await window.DSC.startAgent();
-    statusEl.textContent = 'Starting...';
+    const result = await window.DSC.startAgent();
+    statusEl.textContent = result && result.external ? result.message : 'Starting...';
     // actual state will be updated by refreshStatus polling
   } catch (err) {
     console.warn('startAgent failed', err);

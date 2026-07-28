@@ -7,6 +7,7 @@ try {
 const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, nativeImage } = electron;
 const path = require('path');
 const fs = require('fs');
+const net = require('net');
 const { spawn } = require('child_process');
 // Local PIN prompt micro-server (for per-sign PIN requests from the agent)
 const { ensureReady: ensurePinPromptServerReady } = require('./main/pinPromptServer');
@@ -30,6 +31,7 @@ app.disableHardwareAcceleration();
 let tray = null;
 let mainWindow = null;
 let agentProc = null;
+let externalAgentPort = null;
 let stopRequested = false; // track user-initiated stop to suppress auto-restart
 let mainWindowReady = false;
 let pendingControlPanelShow = false;
@@ -124,8 +126,26 @@ function makeEnvFromSettings(settings) {
 }
 
 function getPort(settings) {
-  const p = (settings.DSC_AGENT_PORT || '').trim();
+  const p = (settings.DSC_AGENT_PORT || process.env.DSC_AGENT_PORT || '').trim();
   return p || '18080';
+}
+
+function isAgentRunning() {
+  return !!agentProc || !!externalAgentPort;
+}
+
+function isPortInUse(port, timeoutMs = 700) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port: Number(port) });
+    const done = (inUse) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(inUse);
+    };
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+    socket.setTimeout(timeoutMs, () => done(false));
+  });
 }
 
 function resolveAgentEntry() {
@@ -154,6 +174,16 @@ async function startAgent() {
   stopRequested = false; // clear any previous stop intent
   const agentPath = resolveAgentEntry();
   const settings = loadSettings();
+  const port = getPort(settings);
+  if (await isPortInUse(port)) {
+    externalAgentPort = port;
+    const message = `Port ${port} is already in use. Another DSC Agent may already be running. Quit the existing app or change DSC_AGENT_PORT to start this dev agent.`;
+    LOG(message);
+    showTrayNotification('DSC Agent', `Already running on port ${port}`);
+    updateTrayMenu();
+    return { ok: false, external: true, message };
+  }
+  externalAgentPort = null;
   const env = makeEnvFromSettings(settings);
   // Always provide a local prompt server so clients can request tool-driven PIN entry per request
   const pinCfg = await ensurePinPromptServerReady({ getMainWindow: () => mainWindow, log: LOG });
@@ -197,7 +227,14 @@ async function startAgent() {
  
 
 function stopAgent() {
-  if (!agentProc) return;
+  if (externalAgentPort && !agentProc) {
+    const message = `Agent on port ${externalAgentPort} was started outside this dev app; not stopping it.`;
+    LOG(message);
+    showTrayNotification('DSC Agent', `Agent on port ${externalAgentPort} is external`);
+    updateTrayMenu();
+    return { ok: false, external: true, message };
+  }
+  if (!agentProc) return { ok: true };
   stopRequested = true;
   try {
     // Try graceful termination first
@@ -218,6 +255,7 @@ function stopAgent() {
     }
   }, 800);
   updateTrayMenu();
+  return { ok: true };
 }
 
 
@@ -335,17 +373,20 @@ function updateTrayMenu() {
   if (!tray) return;
   const s = loadSettings();
   const url = `http://127.0.0.1:${getPort(s)}`;
+  const running = isAgentRunning();
+  const controlLabel = agentProc ? 'Stop Agent' : (externalAgentPort ? 'Agent Running Externally' : 'Start Agent');
   const menu = Menu.buildFromTemplate([
     { label: 'Open Control Panel', click: () => showControlPanel() },
     { type: 'separator' },
-    { label: agentProc ? 'Stop Agent' : 'Start Agent', click: () => agentProc ? stopAgent() : startAgent() },
+    { label: controlLabel, enabled: !externalAgentPort || !!agentProc, click: () => agentProc ? stopAgent() : startAgent() },
     { label: `Agent URL: ${url}`, enabled: false },
+    ...(externalAgentPort ? [{ label: `Port ${externalAgentPort} is in use by another process`, enabled: false }] : []),
     { label: 'View Logs', click: () => dialog.showMessageBox({ type: 'info', title: 'DSC Agent Logs', message: lastLogs.slice(-100).join('\n') }) },
     { type: 'separator' },
     { label: 'Quit', role: 'quit' },
   ]);
   tray.setContextMenu(menu);
-  tray.setToolTip(agentProc ? `DSC Agent (running on ${url})` : 'DSC Agent (stopped)');
+  tray.setToolTip(running ? `DSC Agent (running on ${url})` : 'DSC Agent (stopped)');
 }
 
 // Fetch JSON or error from given URL in application menu
@@ -395,7 +436,8 @@ function createAppMenu() {
       label: 'File',
       submenu: [
         {
-          label: agentProc ? 'Stop Agent' : 'Start Agent',
+          label: agentProc ? 'Stop Agent' : (externalAgentPort ? 'Agent Running Externally' : 'Start Agent'),
+          enabled: !externalAgentPort || !!agentProc,
           click: () => agentProc ? stopAgent() : startAgent()
         },
         { type: 'separator' },
@@ -605,8 +647,8 @@ app.on('will-quit', () => {
 // IPC
 ipcMain.handle('settings:get', () => loadSettings());
 ipcMain.handle('settings:set', (evt, s) => { saveSettings(s || {}); return { ok: true }; });
-ipcMain.handle('agent:start', async () => { await startAgent(); return { ok: true }; });
-ipcMain.handle('agent:stop', () => { stopAgent(); return { ok: true }; });
+ipcMain.handle('agent:start', async () => (await startAgent()) || { ok: true });
+ipcMain.handle('agent:stop', () => stopAgent() || { ok: true });
 ipcMain.handle('logs:get', () => ({ ok: true, logs: lastLogs.slice(-500) }));
 
 
