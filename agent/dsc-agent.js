@@ -11,6 +11,7 @@
 //  GET  /health                 ? { ok: true, version, dll, slotPresent }
 //  POST /sign/pdf               ? { pdfBase64, reason?, profile?, embedIntermediates?, includeESS?, signingTime? (YYYY-MM-DD HH:mm:ss), pin? }
 //                                ? { ok: true, signedPdfBase64 }
+//  POST /sign/pdf-co-sign       ? Add another digital signature as an incremental PDF revision
 //  GET  /certs                  ? { ok: true, pairs:[{ckaIdHex, subjectCN, label}] }
 //
 // Security (dev defaults)
@@ -42,6 +43,7 @@ const cfg = require('./lib/config');
 const pinPromptClient = require('./lib/pinPromptClient');
 const pkcs11lib = require('./lib/pkcs11');
 const pdfUtil = require('./lib/pdf');
+const pdfCoSign = require('./lib/pdfCoSign');
 const timeServerClient = require('./timeServerClient');
 const { runTimeServerHealthOnBoot } = require('./services/timeServerHealthService');
 const {
@@ -2227,6 +2229,124 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('[sign/pdf] failed:', e);
     return respondSigningError(res, e);
+  }
+});
+
+
+app.post('/sign/pdf-co-sign', requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const b64 = body.pdfBase64;
+    if (!b64) return res.status(400).json({ ok: false, message: 'pdfBase64 missing' });
+
+    const inputBuf = Buffer.from(b64, 'base64');
+    try {
+      pdfCoSign.assertCoSignablePdf(inputBuf);
+    } catch (validationError) {
+      return res.status(400).json({ ok: false, message: validationError.message });
+    }
+
+    const { dll } = ensureDllPicked();
+    let pin = body.pin || DSC_PIN_ENV || '';
+    if (!pin && SESSION_PIN) pin = SESSION_PIN;
+    let requirePin = body.requirePin === true || REQUIRE_PIN_PER_SIGN;
+    if (SESSION_PIN && body.requirePin !== true) requirePin = false;
+
+    if (requirePin) {
+      try {
+        pin = await promptPinEnsuringToken(
+          dll,
+          'Enter token PIN to co-sign',
+          'DSC token not detected. Please insert your DSC token before co-signing.',
+        );
+        if (body.rememberSessionPin === true && pin) SESSION_PIN = String(pin);
+      } catch (pinError) {
+        return res.status(400).json({ ok: false, message: pinError.message || 'PIN required' });
+      }
+    } else {
+      try { ensureTokenReady(dll); } catch (tokenError) { return respondSigningError(res, tokenError); }
+    }
+    if (body.rememberSessionPin === false) SESSION_PIN = '';
+
+    const includeESS = body.includeESS !== undefined ? !!body.includeESS : true;
+    const embedIntermediates = body.embedIntermediates !== undefined ? !!body.embedIntermediates : false;
+    const reason = body.reason || 'Co-signed via DSC Agent';
+    let rect = Array.isArray(body.rect) ? body.rect : null;
+    let rectMode = typeof body.rectMode === 'string' ? String(body.rectMode).toLowerCase() : 'pdf';
+    if (!rect && body.left !== undefined && body.top !== undefined) {
+      rect = [body.left, body.top];
+      rectMode = 'top-left';
+    } else if (!rect && body.x !== undefined && body.y !== undefined) {
+      rect = [body.x, body.y];
+      rectMode = 'top-left';
+    }
+
+    const { idHex, certDER, tokenSerial } = detectSigningKey(dll, pin);
+    const asn = asn1js.fromBER(ab(certDER));
+    const signerCert = new pkijs.Certificate({ schema: asn.result });
+    const userName = signerCert.subject.typesAndValues.find((tv) => tv.type === '2.5.4.3')?.value.valueBlock.value || 'Unknown';
+    const intermediates = await fetchIntermediatesIfRequested(signerCert, embedIntermediates);
+    const tsBody = buildTimeServerUserBody(
+      { ...body, pin },
+      { name: userName, serialNumber: tokenSerial },
+    );
+    const remoteApiKey = resolveRemoteApiKey(req, tsBody);
+    let authorizationContext;
+    try {
+      authorizationContext = await createSigningAuthorization({
+        payload: buildCreateAuthorizationPayload({
+          signerIdentity: {
+            name: tsBody.name || userName,
+            machineHash: tsBody.machineHash,
+          },
+          remoteApiKey,
+        }),
+        endpoint: TIME_SERVER_ENDPOINT || undefined,
+      }, { timeServerClient, parseLocalTime, timeField: TIME_SERVER_TIME_FIELD || undefined });
+    } catch (authorizationError) {
+      const mapped = extractRemoteAuthError(authorizationError, 'Signing authorization failed.');
+      return res.status(mapped.status).json({ ok: false, message: mapped.message, reason: mapped.reason });
+    }
+
+    const signingTime = authorizationContext.signingTime;
+    const existingSignatureCount = pdfCoSign.countPdfSignatures(inputBuf);
+    const prepared = await pdfCoSign.addIncrementalSignaturePlaceholder(inputBuf, {
+      name: userName,
+      reason,
+      signingTime,
+      page: body.page,
+      rect,
+      rectMode,
+      signatureLength: 32768,
+    });
+    if (prepared.signatureCount !== existingSignatureCount + 1) {
+      throw new Error('Failed to append exactly one co-signature field.');
+    }
+
+    const signer = new TokenSigner({
+      dll,
+      pin,
+      signerCert,
+      intermediates,
+      includeESS,
+      signingTime,
+      detectedIdHex: idHex,
+    });
+    const signedPdf = await new SignPdf().sign(prepared.pdf, signer);
+    if (!signedPdf.subarray(0, inputBuf.length).equals(inputBuf)) {
+      throw new Error('Co-signing changed the existing signed PDF revision.');
+    }
+
+    return res.json({
+      ok: true,
+      signedPdfBase64: signedPdf.toString('base64'),
+      signatureCount: pdfCoSign.countPdfSignatures(signedPdf),
+      page: prepared.page,
+      rect: prepared.rect,
+    });
+  } catch (error) {
+    console.error('[sign/pdf-co-sign] failed:', error);
+    return respondSigningError(res, error);
   }
 });
 
