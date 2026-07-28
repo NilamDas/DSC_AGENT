@@ -1,4 +1,12 @@
-const { BrowserWindow, ipcMain, app } = require('electron');
+let electron;
+try {
+  electron = require('electron/main');
+} catch {
+  electron = require('electron');
+}
+const BrowserWindow = electron && electron.BrowserWindow;
+const ipcMain = electron && electron.ipcMain;
+const app = electron && electron.app;
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
@@ -106,6 +114,9 @@ function resolvePinHtmlPath() {
 }
 
 function createPinWindow() {
+  if (!BrowserWindow || !ipcMain) {
+    throw new Error('Electron window APIs are not available in this process');
+  }
   if (pinPrompt.win && !pinPrompt.win.isDestroyed() && pinPrompt.windowReady) {
     return pinPrompt.windowReady;
   }
@@ -268,20 +279,22 @@ function showPinDialog(message, response) {
   });
 }
 
-app.on('before-quit', () => {
-  isAppQuitting = true;
-  cancelActivePrompt('app_quit');
-  const window = pinPrompt.win;
-  pinPrompt.win = null;
-  pinPrompt.windowReady = null;
-  if (window && !window.isDestroyed()) {
-    try { window.destroy(); } catch {}
-  }
-  if (pinPrompt.server) {
-    try { pinPrompt.server.close(); } catch {}
-    pinPrompt.server = null;
-  }
-});
+if (app && typeof app.on === 'function') {
+  app.on('before-quit', () => {
+    isAppQuitting = true;
+    cancelActivePrompt('app_quit');
+    const window = pinPrompt.win;
+    pinPrompt.win = null;
+    pinPrompt.windowReady = null;
+    if (window && !window.isDestroyed()) {
+      try { window.destroy(); } catch {}
+    }
+    if (pinPrompt.server) {
+      try { pinPrompt.server.close(); } catch {}
+      pinPrompt.server = null;
+    }
+  });
+}
 
 function ensureReady({ log } = {}) {
   if (typeof log === 'function') pinPrompt.logger = log;

@@ -1,5 +1,15 @@
 # DSC Agent
 
+## Run locally
+
+From the repository root, use:
+
+```bash
+npm run dev
+```
+
+This forwards to the Electron app in `electron-app/`.
+
 
 
 ## Getting started

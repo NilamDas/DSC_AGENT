@@ -1,4 +1,10 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, nativeImage } = require('electron');
+let electron;
+try {
+  electron = require('electron/main');
+} catch {
+  electron = require('electron');
+}
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, nativeImage } = electron;
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');

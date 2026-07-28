@@ -5,6 +5,11 @@
   "main": "runtime/electron/main.loader.js",
   "private": true,
   "type": "commonjs",
+  "scripts": {
+    "dev": "npm --prefix electron-app run dev",
+    "start": "npm --prefix electron-app run dev",
+    "build": "npm --prefix electron-app run build"
+  },
   "author": {
     "name": "DSC Agent",
     "email": "support@example.com",
