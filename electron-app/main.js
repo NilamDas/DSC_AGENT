@@ -105,6 +105,27 @@ function saveSettings(s) {
   fs.writeFileSync(p, JSON.stringify(s, null, 2));
 }
 
+function isDllPathForCurrentPlatform(p) {
+  const value = String(p || '').trim();
+  const isWindowsPath = /^[a-z]:[\\/]/i.test(value) || /\.dll$/i.test(value);
+  if (!value) return false;
+  if (process.platform === 'win32') return isWindowsPath;
+  if (process.platform === 'darwin') {
+    return !isWindowsPath
+      && (value.startsWith('/Library/') || value.startsWith('/usr/local/') || value.startsWith('/opt/homebrew/'))
+      && (
+        /\.dylib$/i.test(value)
+        || /\.so$/i.test(value)
+        || /\.framework(?:\/|$)/i.test(value)
+      );
+  }
+  return !isWindowsPath
+    && !value.startsWith('/Library/')
+    && !value.startsWith('/opt/homebrew/')
+    && !/\.dylib$/i.test(value)
+    && !/\.framework(?:\/|$)/i.test(value);
+}
+
 function makeEnvFromSettings(settings) {
   const env = { ...process.env };
   const map = {
@@ -116,6 +137,7 @@ function makeEnvFromSettings(settings) {
     DSC_REQUIRE_PIN_PER_SIGN: 'DSC_REQUIRE_PIN_PER_SIGN',
   };
   for (const k of Object.keys(map)) {
+    if (k === 'PKCS11_DLL' && settings[k] && !isDllPathForCurrentPlatform(settings[k])) continue;
     if (settings[k]) env[map[k]] = String(settings[k]);
   }
   // Default to requiring PIN per sign if not explicitly configured
@@ -674,6 +696,9 @@ function dllPresetsForPlatform() {
       '/usr/local/lib/opensc-pkcs11.so',
       '/usr/local/lib/libeTPkcs11.dylib',
       '/Library/Frameworks/eToken.framework/Versions/Current/eToken',
+      '/usr/local/lib/libeps2003csp11.dylib',
+      '/usr/local/lib/libwdpkcs.dylib',
+      '/usr/local/lib/wdProxKeyUsbKeyTool/libwdpkcs_Proxkey.dylib',
     ];
   } else {
     // linux

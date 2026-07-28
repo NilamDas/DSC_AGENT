@@ -71,8 +71,47 @@ const DEFAULT_CANDIDATES = [
   '/usr/local/lib/libSignatureP11.so',
 ];
 
+function isWindowsPath(p) {
+  return /^[a-z]:[\\/]/i.test(String(p || '')) || /\.dll$/i.test(String(p || ''));
+}
+
+function isCandidateForCurrentPlatform(p) {
+  const value = String(p || '').trim();
+  if (!value) return false;
+  if (process.platform === 'win32') return isWindowsPath(value);
+  if (process.platform === 'darwin') {
+    return !isWindowsPath(value)
+      && (value.startsWith('/Library/') || value.startsWith('/usr/local/') || value.startsWith('/opt/homebrew/'))
+      && (
+        /\.dylib$/i.test(value)
+        || /\.so$/i.test(value)
+        || /\.framework(?:\/|$)/i.test(value)
+      );
+  }
+  return !isWindowsPath(value)
+    && !value.startsWith('/Library/')
+    && !value.startsWith('/opt/homebrew/')
+    && !/\.dylib$/i.test(value)
+    && !/\.framework(?:\/|$)/i.test(value);
+}
+
+function filterPlatformCandidates(paths) {
+  const seen = new Set();
+  return (Array.isArray(paths) ? paths : []).filter((candidate) => {
+    if (!isCandidateForCurrentPlatform(candidate)) return false;
+    const key = String(candidate || '').replace(/\\/g, '/').toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+const configuredPkcs11Dll = String(process.env.PKCS11_DLL || (fileCfg.pkcs11Dll || '')).trim();
+
 const cfg = Object.freeze({
-  DEFAULT_CANDIDATES,
+  DEFAULT_CANDIDATES: filterPlatformCandidates(DEFAULT_CANDIDATES),
+  isCandidateForCurrentPlatform,
+  filterPlatformCandidates,
   KNOWN_TOKENS: {
     'ProxKey': {
       name: 'ProxKey',
@@ -83,7 +122,7 @@ const cfg = Object.freeze({
         '/usr/lib/libSignatureP11.so',
         '/usr/local/lib/libSignatureP11.so',
         '/usr/local/lib/libSignatureP11.dylib',
-      ],
+      ].filter(isCandidateForCurrentPlatform),
     },
     'ePass2003': {
       name: 'ePass2003',
@@ -93,7 +132,7 @@ const cfg = Object.freeze({
         '/usr/lib/libeps2003csp11.so',
         '/usr/local/lib/libeps2003csp11.so',
         '/usr/local/lib/libeps2003csp11.dylib',
-      ],
+      ].filter(isCandidateForCurrentPlatform),
     },
     'HYP 2003': {
       name: 'HYP 2003',
@@ -103,7 +142,7 @@ const cfg = Object.freeze({
         '/usr/lib/libeps2003csp11v2.so',
         '/usr/local/lib/libeps2003csp11v2.so',
         '/usr/local/lib/libeps2003csp11v2.dylib',
-      ],
+      ].filter(isCandidateForCurrentPlatform),
     },
     'SafeNet eToken': {
       name: 'SafeNet eToken',
@@ -114,7 +153,7 @@ const cfg = Object.freeze({
         '/usr/local/lib/libeTPkcs11.so',
         '/usr/local/lib/libeTPkcs11.dylib',
         '/Library/Frameworks/eToken.framework/Versions/Current/eToken',
-      ],
+      ].filter(isCandidateForCurrentPlatform),
     },
     'OpenSC': {
       name: 'OpenSC',
@@ -126,7 +165,7 @@ const cfg = Object.freeze({
         '/usr/lib/opensc-pkcs11.so',
         '/usr/lib64/opensc-pkcs11.so',
         '/usr/local/lib64/opensc-pkcs11.so',
-      ],
+      ].filter(isCandidateForCurrentPlatform),
     },
     'Watchdata (mToken)': {
       name: 'Watchdata (mToken)',
@@ -136,10 +175,10 @@ const cfg = Object.freeze({
         '/usr/lib/libwdpkcs.so',
         '/usr/local/lib/libwdpkcs.so',
         '/usr/local/lib/libwdpkcs.dylib',
-      ],
+      ].filter(isCandidateForCurrentPlatform),
     }
   },
-  PKCS11_DLL: process.env.PKCS11_DLL || (fileCfg.pkcs11Dll || ''),
+  PKCS11_DLL: configuredPkcs11Dll && isCandidateForCurrentPlatform(configuredPkcs11Dll) ? configuredPkcs11Dll : '',
   DSC_PIN_ENV: process.env.DSC_PIN || (fileCfg.pin || ''),
   PORT: parseInt(process.env.DSC_AGENT_PORT || String(fileCfg.port || '18080'), 10),
   ALLOW: (() => {
