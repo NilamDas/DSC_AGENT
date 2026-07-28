@@ -49,16 +49,9 @@ function updateButtons(isRunning, tokenPresent) {
     btnStart.disabled = false;
     btnStop.disabled = true;
   } else {
-    // Agent is running
-    if (tokenPresent) {
-      // Token found: Start disabled, Stop enabled
-      btnStart.disabled = true;
-      btnStop.disabled = false;
-    } else {
-      // Running but no token: Start enabled (still allow retry), Stop disabled
-      btnStart.disabled = false;
-      btnStop.disabled = true;
-    }
+    // Agent is running, regardless of whether the token is inserted.
+    btnStart.disabled = true;
+    btnStop.disabled = false;
   }
 }
 
@@ -142,7 +135,7 @@ function normalizePath(p) {
 async function fetchTokensWithRetry(base, headers, attempts = 15, delayMs = 300) {
   for (let i = 0; i < attempts; i++) {
     try {
-      const rt = await fetch(base + '/tokens', { headers });
+      const rt = await fetchWithTimeout(base + '/tokens', { headers }, 6000);
       if (!rt.ok) throw new Error('HTTP ' + rt.status);
       return await rt.json();
     } catch (err) {
@@ -186,9 +179,9 @@ async function syncAgentTokenSelection(name) {
   const headers = { ...tokenState.headers, 'Content-Type': 'application/json' };
   try {
     if (name && name !== '__custom__') {
-      await fetch(`${tokenState.baseUrl}/token/select`, { method: 'POST', headers, body: JSON.stringify({ tokenName: name }) });
+      await fetchWithTimeout(`${tokenState.baseUrl}/token/select`, { method: 'POST', headers, body: JSON.stringify({ tokenName: name }) }, 6000);
     } else {
-      await fetch(`${tokenState.baseUrl}/token/clear`, { method: 'POST', headers });
+      await fetchWithTimeout(`${tokenState.baseUrl}/token/clear`, { method: 'POST', headers }, 6000);
     }
   } catch (err) {
     console.warn('Failed to sync token selection:', err);
@@ -254,7 +247,7 @@ async function refreshTokenConnections() {
   if (!tokenState.baseUrl || tokenState.refreshing || (Date.now() - tokenState.refreshedAt) < 2000) return;
   tokenState.refreshing = true;
   try {
-    const response = await fetch(`${tokenState.baseUrl}/tokens`, { headers: tokenState.headers });
+    const response = await fetchWithTimeout(`${tokenState.baseUrl}/tokens`, { headers: tokenState.headers }, 6000);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json();
     tokenState.tokens = Array.isArray(body.tokens) ? body.tokens : [];
@@ -354,11 +347,11 @@ document.getElementById('btn-save').addEventListener('click', async () => {
     if (dllPath && tokenState.baseUrl) {
       const headers = { ...tokenState.headers, 'Content-Type': 'application/json' };
       try {
-        await fetch(`${tokenState.baseUrl}/token/select`, {
+        await fetchWithTimeout(`${tokenState.baseUrl}/token/select`, {
           method: 'POST',
           headers,
           body: JSON.stringify({ dll: dllPath }),
-        });
+        }, 6000);
       } catch (syncErr) {
         console.warn('Failed to sync DLL with running agent:', syncErr);
       }

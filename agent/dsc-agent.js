@@ -31,6 +31,7 @@ const crypto = require('crypto');
 const express = require('express');
 const http = require('http');
 const https = require('https');
+const { execFile } = require('child_process');
 const PKCS11 = require('pkcs11js');
 const asn1js = require('asn1js');
 const pkijs = require('pkijs');
@@ -91,7 +92,111 @@ let SESSION_PIN = '';
 let USER_SELECTED_DLL = '';
 let USER_SELECTED_TOKEN = '';
 const TOKEN_STATUS_CACHE_MS = 5000;
+const TOKEN_PROBE_TIMEOUT_MS = 1800;
 let TOKEN_STATUS_CACHE = { dll: '', checkedAt: 0, slotPresent: false };
+
+const TOKEN_PROBE_SCRIPT = `
+const fs = require('fs');
+const PKCS11 = require('pkcs11js');
+const candidates = JSON.parse(process.argv[1] || '[]');
+const statuses = [];
+let selected = null;
+let fallback = null;
+for (const dll of candidates) {
+  const status = { path: dll, exists: false, loadable: false, connected: false };
+  let p11 = null;
+  let initialized = false;
+  try {
+    if (!dll || !fs.existsSync(dll)) {
+      statuses.push(status);
+      continue;
+    }
+    status.exists = true;
+    p11 = new PKCS11.PKCS11();
+    p11.load(dll);
+    p11.C_Initialize();
+    initialized = true;
+    status.loadable = true;
+    let withToken = [];
+    let allSlots = [];
+    try { withToken = p11.C_GetSlotList(true) || []; } catch (err) { status.slotError = err && err.message ? err.message : String(err); }
+    try { allSlots = p11.C_GetSlotList(false) || []; } catch {}
+    status.connected = withToken.length > 0;
+    status.slotCount = withToken.length;
+    status.totalSlots = allSlots.length;
+    if (status.connected && !selected) selected = status;
+    if (status.loadable && !fallback) fallback = status;
+  } catch (err) {
+    status.error = err && err.message ? err.message : String(err);
+  } finally {
+    if (p11 && initialized) {
+      try { p11.C_Finalize(); } catch {}
+    }
+  }
+  statuses.push(status);
+}
+console.log(JSON.stringify({ ok: true, selected: selected || fallback || null, statuses }));
+`;
+
+function normalizeProbeCandidates(candidates) {
+  const seen = new Set();
+  const out = [];
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    const value = String(candidate || '').trim();
+    const key = value.replace(/\\/g, '/').toLowerCase();
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+function probeTokenCandidates(candidates, timeoutMs = TOKEN_PROBE_TIMEOUT_MS) {
+  const list = normalizeProbeCandidates(candidates);
+  if (!list.length) {
+    return Promise.resolve({ ok: true, selected: null, statuses: [], timedOut: false });
+  }
+  return new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      ['-e', TOKEN_PROBE_SCRIPT, JSON.stringify(list)],
+      {
+        cwd: __dirname,
+        env: process.env,
+        timeout: timeoutMs,
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          const timedOut = error.killed || error.signal === 'SIGTERM';
+          if (!timedOut) {
+            console.warn('[health] token probe child failed:', error.message || error, stderr || '');
+          }
+          return resolve({
+            ok: false,
+            selected: null,
+            statuses: list.map((path) => ({ path, exists: false, loadable: false, connected: false, timedOut })),
+            timedOut,
+            message: timedOut ? 'Token probe timed out' : (error.message || 'Token probe failed'),
+          });
+        }
+        try {
+          const parsed = JSON.parse(String(stdout || '').trim());
+          return resolve({ ok: true, selected: parsed.selected || null, statuses: parsed.statuses || [], timedOut: false });
+        } catch (parseError) {
+          return resolve({
+            ok: false,
+            selected: null,
+            statuses: list.map((path) => ({ path, exists: false, loadable: false, connected: false })),
+            timedOut: false,
+            message: parseError.message || 'Token probe output was invalid',
+          });
+        }
+      },
+    );
+  });
+}
 
 const OID = {
   data: '1.2.840.113549.1.7.1',
@@ -150,7 +255,7 @@ function ensureTokenReady(dll) {
   }
 }
 
-function getTokenPresenceCached(dll) {
+async function getTokenPresenceCached(dll) {
   if (
     TOKEN_STATUS_CACHE.dll === dll
     && (Date.now() - TOKEN_STATUS_CACHE.checkedAt) < TOKEN_STATUS_CACHE_MS
@@ -158,9 +263,14 @@ function getTokenPresenceCached(dll) {
     return TOKEN_STATUS_CACHE.slotPresent;
   }
   try {
-    ensureTokenReady(dll);
-    return true;
-  } catch {
+    const probe = await probeTokenCandidates([dll]);
+    const status = probe.statuses && probe.statuses[0];
+    const slotPresent = !!(status && status.connected);
+    TOKEN_STATUS_CACHE = { dll, checkedAt: Date.now(), slotPresent };
+    return slotPresent;
+  } catch (err) {
+    TOKEN_STATUS_CACHE = { dll, checkedAt: Date.now(), slotPresent: false };
+    console.warn('[health] token probe failed:', err && err.message ? err.message : err);
     return false;
   }
 }
@@ -1788,6 +1898,30 @@ function ensureDllPicked() {
   return picked;
 }
 
+function getHealthProbeCandidates() {
+  if (USER_SELECTED_DLL) return [USER_SELECTED_DLL];
+  if (USER_SELECTED_TOKEN) return pkcs11lib.getKnownTokenCandidates(USER_SELECTED_TOKEN);
+  const preferred = PKCS11_DLL || '';
+  const candidates = [];
+  if (preferred) candidates.push(preferred);
+  if (picked && picked.dll) candidates.push(picked.dll);
+  candidates.push(...DEFAULT_CANDIDATES);
+  return normalizeProbeCandidates(candidates);
+}
+
+async function resolveHealthSelection() {
+  const probe = await probeTokenCandidates(getHealthProbeCandidates());
+  const selected = probe.selected || (picked && picked.dll ? { path: picked.dll, connected: false } : null);
+  if (selected && selected.path) {
+    picked = { dll: selected.path, slotPresent: !!selected.connected, totalSlots: selected.totalSlots || 0 };
+    TOKEN_STATUS_CACHE = { dll: selected.path, checkedAt: Date.now(), slotPresent: !!selected.connected };
+    return picked;
+  }
+  picked = null;
+  TOKEN_STATUS_CACHE = { dll: '', checkedAt: Date.now(), slotPresent: false };
+  return { dll: '', slotPresent: false };
+}
+
 // app.get('/health', (req, res) => {
 //   try { const { dll, slotPresent } = ensureDllPicked(); res.json({ ok:true, version: VERSION, dll, slotPresent, requirePinPerSign: REQUIRE_PIN_PER_SIGN, promptAvailable: !!PIN_PROMPT_URL }); }
 //   catch(e){ res.status(500).json({ ok:false, message: e.message }); }
@@ -1795,42 +1929,52 @@ function ensureDllPicked() {
 
 
 
-// removed caching of slotPresent to reflect real-time token presence 
-app.get('/health', (req, res) => {
+// Token presence is device state, not process health; always answer /health.
+app.get('/health', async (req, res) => {
+  let selected = null;
   try {
-    const selected = ensureDllPicked();
-    const slotPresent = getTokenPresenceCached(selected.dll);
+    selected = await resolveHealthSelection();
+    const slotPresent = selected && selected.dll ? await getTokenPresenceCached(selected.dll) : false;
     res.json({ ok: true, version: VERSION, dll: selected.dll, slotPresent, requirePinPerSign: REQUIRE_PIN_PER_SIGN, promptAvailable: !!PIN_PROMPT_URL });
   }
-  catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  catch (e) {
+    const dll = selected && selected.dll ? selected.dll : '';
+    TOKEN_STATUS_CACHE = { dll, checkedAt: Date.now(), slotPresent: false };
+    res.json({
+      ok: true,
+      version: VERSION,
+      dll,
+      slotPresent: false,
+      requirePinPerSign: REQUIRE_PIN_PER_SIGN,
+      promptAvailable: !!PIN_PROMPT_URL,
+      message: e.message || 'Token absent',
+    });
+  }
 });
 
 
 
 // List known tokens and current selection
-app.get('/tokens', requireAuth, (req, res) => {
+app.get('/tokens', requireAuth, async (req, res) => {
   try {
     const map = cfg.KNOWN_TOKENS || {};
     const fs = require('fs');
-    const statusByPath = new Map();
-    const probe = (candidatePath) => {
-      const key = String(candidatePath || '').replace(/\\/g, '/').toLowerCase();
-      if (!statusByPath.has(key)) {
-        statusByPath.set(key, pkcs11lib.probeTokenModule(candidatePath));
-      }
-      return statusByPath.get(key);
-    };
-    const tokens = Object.keys(map).map((name) => {
+    const tokens = await Promise.all(Object.keys(map).map(async (name) => {
       const candidates = (map[name].paths || []).map((candidatePath) => ({
         path: candidatePath,
         exists: fs.existsSync(candidatePath),
         loadable: false,
         connected: false,
       }));
+      const probe = await probeTokenCandidates(candidates.map((candidate) => candidate.path));
+      const statusByPath = new Map((probe.statuses || []).map((status) => [
+        String(status.path || '').replace(/\\/g, '/').toLowerCase(),
+        status,
+      ]));
       for (const candidate of candidates) {
-        if (!candidate.exists) continue;
-        Object.assign(candidate, probe(candidate.path));
-        if (candidate.loadable) break;
+        const key = String(candidate.path || '').replace(/\\/g, '/').toLowerCase();
+        const status = statusByPath.get(key);
+        if (status) Object.assign(candidate, status);
       }
       return {
         name,
@@ -1838,7 +1982,7 @@ app.get('/tokens', requireAuth, (req, res) => {
         connected: candidates.some((candidate) => candidate.connected),
         candidates,
       };
-    });
+    }));
     res.json({ ok: true, selected: { tokenName: USER_SELECTED_TOKEN, dll: USER_SELECTED_DLL }, tokens });
   } catch (e) {
     res.status(500).json({ ok: false, message: e.message });
@@ -1847,7 +1991,7 @@ app.get('/tokens', requireAuth, (req, res) => {
 
 // Select token by name or explicit DLL path
 // Body: { tokenName?: string, dll?: string }
-app.post('/token/select', requireAuth, (req, res) => {
+app.post('/token/select', requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
     const fs = require('fs');
@@ -1856,13 +2000,19 @@ app.post('/token/select', requireAuth, (req, res) => {
     let selected = null;
     if (dllIn) {
       if (!fs.existsSync(dllIn)) return res.status(400).json({ ok: false, message: 'DLL not found' });
-      selected = pkcs11lib.pickModule(dllIn);
+      const probe = await probeTokenCandidates([dllIn]);
+      const probed = probe.selected || (probe.statuses && probe.statuses[0]) || { path: dllIn, connected: false };
+      selected = { dll: probed.path || dllIn, slotPresent: !!probed.connected };
       USER_SELECTED_DLL = selected.dll;
       USER_SELECTED_TOKEN = '';
     } else if (tname) {
       const candidates = pkcs11lib.getKnownTokenCandidates(tname);
       if (!candidates.length) return res.status(400).json({ ok: false, message: 'Unknown tokenName' });
-      selected = pkcs11lib.pickFromCandidates(candidates);
+      const probe = await probeTokenCandidates(candidates);
+      const probed = probe.selected
+        || (probe.statuses || []).find((status) => status.exists)
+        || { path: candidates[0], connected: false };
+      selected = { dll: probed.path || candidates[0], slotPresent: !!probed.connected };
       USER_SELECTED_DLL = selected.dll;
       USER_SELECTED_TOKEN = tname;
     } else {
