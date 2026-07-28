@@ -363,42 +363,6 @@ Sign a single PDF.
 | `x` / `y` | number | — | Shortcut for `rect` with `rectMode: "top-left"` |
 | `apiKey` | string | — | eSwakshar API key |
 
-## 6.3A POST /sign/pdf-co-sign
-
-Add another digital signature without flattening or removing existing signatures. The new signature is appended as an incremental PDF revision, preserving all bytes from previous signed revisions.
-
-**Request Body:**
-```json
-{
-  "pdfBase64": "<base64-encoded PDF that already has a signature>",
-  "reason": "Approved",
-  "includeESS": true,
-  "embedIntermediates": false,
-  "pin": "123456",
-  "requirePin": true,
-  "rememberSessionPin": false,
-  "rect": [300, 40, 550, 90],
-  "rectMode": "pdf",
-  "page": "last",
-  "apiKey": "<eSwakshar API key>"
-}
-```
-
-`rectMode` may be `"pdf"` with `[x1,y1,x2,y2]`, or `"top-left"` with `[left,top,width,height]`. The `x`/`y` and `left`/`top` shortcuts are also supported.
-
-**Response:**
-```json
-{
-  "ok": true,
-  "signedPdfBase64": "<base64-encoded co-signed PDF>",
-  "signatureCount": 2,
-  "page": 1,
-  "rect": [300, 40, 550, 90]
-}
-```
-
-The endpoint rejects unsigned PDFs, PDFs containing an unfinished signature placeholder, certification signatures that forbid changes, and unsupported PDF cross-reference structures. Existing `/sign/pdf` and `/sign/pdf-resign-flatten` behavior is unchanged.
-
 ## 6.4 POST /sign/pdf-batch
 
 Sign multiple PDFs with a single PIN prompt.
@@ -702,15 +666,6 @@ Same as above, but:
 4. Optionally preserve previous signature visuals in page content
 5. Create fresh PDF without signatures
 6. Sign as a new signature
-
-## 9.4 Co-sign Flow
-
-1. Validate that the input already contains a digital signature
-2. Preserve the complete original PDF byte sequence
-3. Append a new signature field, clickable widget, and visible appearance
-4. Append a new cross-reference section and signature placeholder
-5. Sign only the new incremental revision
-6. Return the PDF with all previous signature revisions retained
 
 ---
 

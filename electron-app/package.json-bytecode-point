@@ -53,19 +53,31 @@
         "from": "..",
         "to": "agent",
         "filter": [
-          "dsc-agent.config.json"
+          "dsc-agent.config.json",
+          "package.json",
+          "package-lock.json",
+          "node_modules/**",
+          "!electron-app/**",
+          "!web-demo/**"
         ]
       },
       {
-        "from": "../node_modules/pkcs11js",
-        "to": "agent/node_modules/pkcs11js",
+        "from": "bin/win/",
+        "to": "bin/win/",
         "filter": [
           "**/*"
         ]
       },
       {
-        "from": "../node_modules/bytenode",
-        "to": "agent/node_modules/bytenode",
+        "from": "bin/mac/",
+        "to": "bin/mac/",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "bin/linux/",
+        "to": "bin/linux/",
         "filter": [
           "**/*"
         ]
@@ -73,15 +85,6 @@
     ],
     "win": {
       "icon": "assets/windows/icon.ico",
-      "extraResources": [
-        {
-          "from": "bin/win/",
-          "to": "bin/win/",
-          "filter": [
-            "**/*"
-          ]
-        }
-      ],
       "target": [
         "nsis",
         "portable"
@@ -91,30 +94,12 @@
       "icon": "assets/Mac/icon.png",
       "category": "public.app-category.business",
       "identity": null,
-      "extraResources": [
-        {
-          "from": "bin/mac/",
-          "to": "bin/mac/",
-          "filter": [
-            "**/*"
-          ]
-        }
-      ],
       "target": [
         "dmg"
       ]
     },
     "linux": {
       "icon": "assets/linux/icon.png",
-      "extraResources": [
-        {
-          "from": "bin/linux/",
-          "to": "bin/linux/",
-          "filter": [
-            "**/*"
-          ]
-        }
-      ],
       "target": [
         "AppImage",
         "deb",

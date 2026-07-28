@@ -54,7 +54,12 @@
         "from": "..",
         "to": "agent",
         "filter": [
-          "dsc-agent.config.json"
+          "dsc-agent.config.json",
+          "package.json",
+          "package-lock.json",
+          "node_modules/**",
+          "!electron-app/**",
+          "!web-demo/**"
         ]
       },
       {
@@ -72,21 +77,15 @@
         ]
       },
       {
-        "from": "../dsc-agent.config.json",
-        "to": "dsc-agent.config.json"
+        "from": "bin/linux/",
+        "to": "bin/linux/",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
       "icon": "assets/windows/icon.ico",
-      "extraResources": [
-        {
-          "from": "bin/win/",
-          "to": "bin/win/",
-          "filter": [
-            "**/*"
-          ]
-        }
-      ],
       "target": [
         "nsis",
         "portable"
@@ -103,15 +102,6 @@
     },
     "linux": {
       "icon": "assets/linux/icon.png",
-      "extraResources": [
-        {
-          "from": "bin/linux/",
-          "to": "bin/linux/",
-          "filter": [
-            "**/*"
-          ]
-        }
-      ],
       "target": [
         "AppImage",
         "deb",
