@@ -5,8 +5,6 @@ const asn1js = require('asn1js');
 
 const A_SHA256 = Buffer.from([0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20]);
 const di256 = (h) => Buffer.concat([A_SHA256, h]);
-const VERIFIED_KEY_CACHE_MS = 5 * 60 * 1000;
-const verifiedKeyCache = new Map();
 
 function tryPick(candidates) {
   let fallback = null;
@@ -48,32 +46,6 @@ function getKnownTokenCandidates(name) {
   const m = cfg.KNOWN_TOKENS || {};
   const t = m[name];
   return (t && Array.isArray(t.paths)) ? t.paths.slice() : [];
-}
-
-function probeTokenModule(dll) {
-  const fs = require('fs');
-  const status = { path: dll, exists: false, loadable: false, connected: false };
-  if (!dll || !fs.existsSync(dll)) return status;
-
-  status.exists = true;
-  const p11 = new PKCS11.PKCS11();
-  let initialized = false;
-  try {
-    p11.load(dll);
-    p11.C_Initialize();
-    initialized = true;
-    status.loadable = true;
-    const slots = p11.C_GetSlotList(true) || [];
-    status.connected = slots.length > 0;
-    status.slotCount = slots.length;
-  } catch {
-    status.connected = false;
-  } finally {
-    if (initialized) {
-      try { p11.C_Finalize(); } catch {}
-    }
-  }
-  return status;
 }
 
 function getSlotHandle(p11, needToken = true) {
@@ -158,26 +130,6 @@ function probePair(p11, s, privHandle, certDER) {
   return { ok:false };
 }
 
-function getTokenSerial(p11, session) {
-  try {
-    const sessionInfo = p11.C_GetSessionInfo(session);
-    const slot = sessionInfo && (sessionInfo.slotID || sessionInfo.slotId || sessionInfo.slot);
-    if (!slot) return '';
-    const tokenInfo = p11.C_GetTokenInfo(slot);
-    const rawSerial = tokenInfo && tokenInfo.serialNumber;
-    return Buffer.isBuffer(rawSerial)
-      ? rawSerial.toString('utf8').trim()
-      : String(rawSerial || '').trim();
-  } catch {
-    return '';
-  }
-}
-
-function clearSigningKeyCache(dll) {
-  if (dll) verifiedKeyCache.delete(dll);
-  else verifiedKeyCache.clear();
-}
-
 function detectSigningKey(dll, pin) {
   return withSession(dll, pin, (p11, s) => {
     let tokenSerial = '';
@@ -228,7 +180,6 @@ module.exports = {
   pickModule,
   pickFromCandidates,
   getKnownTokenCandidates,
-  probeTokenModule,
   ensureDllPicked,
   withSession,
   listObjects,
@@ -236,7 +187,6 @@ module.exports = {
   bufToHex,
   hexEq,
   detectSigningKey,
-  clearSigningKeyCache,
 };
 
 // New: list key/cert pairs for UI selection (best-effort without login)

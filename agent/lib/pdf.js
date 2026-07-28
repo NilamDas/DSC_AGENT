@@ -3,9 +3,6 @@ const https = require('https');
 const crypto = require('crypto');
 const asn1js = require('asn1js');
 const pkijs = require('pkijs');
-const AIA_TIMEOUT_MS = 5000;
-const AIA_CACHE_MS = 60 * 60 * 1000;
-const aiaResponseCache = new Map();
 
 function ab(b) { return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); }
 
@@ -35,31 +32,17 @@ function getAIAUrls(cert) {
   return { caIssuers, ocsp };
 }
 
-async function httpGetRaw(url, redirectCount = 0) {
-  const cached = aiaResponseCache.get(url);
-  if (cached && (Date.now() - cached.fetchedAt) < AIA_CACHE_MS) {
-    return Buffer.from(cached.data);
-  }
-  if (redirectCount > 5) throw new Error(`Too many redirects while fetching ${url}`);
+async function httpGetRaw(url) {
   const mod = url.startsWith('https:') ? https : http;
   return new Promise((resolve, reject) => {
     const req = mod.get(url, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        const redirectedUrl = new URL(res.headers.location, url).toString();
-        res.resume();
-        return resolve(httpGetRaw(redirectedUrl, redirectCount + 1));
+        return resolve(httpGetRaw(res.headers.location));
       }
       if (res.statusCode !== 200) return reject(new Error(`GET ${url} -> HTTP ${res.statusCode}`));
-      const chunks = [];
-      res.on('data', d => chunks.push(d));
-      res.on('end', () => {
-        const data = Buffer.concat(chunks);
-        aiaResponseCache.set(url, { data: Buffer.from(data), fetchedAt: Date.now() });
-        resolve(data);
-      });
+      const chunks = []; res.on('data', d => chunks.push(d)); res.on('end', () => resolve(Buffer.concat(chunks)));
     });
-    req.setTimeout(AIA_TIMEOUT_MS, () => req.destroy(new Error(`AIA request timed out after ${AIA_TIMEOUT_MS}ms`)));
-    req.on('error', reject);
+    req.on('error', reject); req.end();
   });
 }
 

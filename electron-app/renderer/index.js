@@ -3,7 +3,7 @@ const statusEl = document.getElementById('status');
 const $ = (id) => document.getElementById(id);
 
 let settings = {};
-const tokenState = { tokens: [], baseUrl: '', headers: {}, selected: '', refreshing: false, refreshedAt: 0 };
+const tokenState = { tokens: [], baseUrl: '', headers: {}, selected: '' };
 
 function log(o) { out.textContent = typeof o === 'string' ? o : JSON.stringify(o, null, 2);
    if (out) {
@@ -67,20 +67,6 @@ function updateButtons(isRunning, tokenPresent) {
 
 
 let lastTokenState = null;
-
-function updateSelectedTokenConnection(dll, connected) {
-  if (!dll || !tokenState.tokens.length) return;
-  const token = tokenState.tokens.find((item) =>
-    (item.candidates || []).some((candidate) => normalizePath(candidate.path) === normalizePath(dll))
-  );
-  if (!token || token.connected === connected) return;
-  for (const candidate of token.candidates || []) {
-    if (normalizePath(candidate.path) === normalizePath(dll)) candidate.connected = connected;
-  }
-  token.connected = connected;
-  renderTokenDropdown({ selected: { tokenName: tokenState.selected } }, false);
-}
-
 async function refreshStatus() {
   try {
     const port = (settings.DSC_AGENT_PORT || '').trim() || '18080';
@@ -98,7 +84,6 @@ async function refreshStatus() {
       }
     }
     lastTokenState = currentTokenState;
-    updateSelectedTokenConnection(j.dll, !!j.slotPresent);
 
     setBadge('ok', 'v' + (j.version || '?') + ' | Token: ' + currentTokenState);
     updateButtons(true, !!j.slotPresent);
@@ -153,9 +138,8 @@ function setDllForSelection(name) {
   if (!token) return null;
   const candidates = Array.isArray(token.candidates) ? token.candidates : [];
   if (!candidates.length) return null;
-  const connected = candidates.find((c) => c && c.connected && c.path);
   const existing = candidates.find((c) => c && c.exists && c.path);
-  const chosen = connected || existing || candidates.find((c) => c && c.path);
+  const chosen = existing || candidates.find((c) => c && c.path);
   if (!chosen || !chosen.path) return null;
   const input = $('PKCS11_DLL');
   if (input) input.value = chosen.path;
@@ -194,13 +178,7 @@ async function handleTokenChange() {
   await syncAgentTokenSelection(value);
 }
 
-function tokenStatusLabel(token) {
-  if (token && token.connected) return `${token.name} - Connected`;
-  if (token && token.installed) return `${token.name} - Driver installed`;
-  return `${token.name} - Driver not found`;
-}
-
-function renderTokenDropdown(response, syncSelection = true) {
+function renderTokenDropdown(response) {
   const sel = $('tokenName');
   if (!sel) return;
   sel.innerHTML = '';
@@ -209,7 +187,7 @@ function renderTokenDropdown(response, syncSelection = true) {
   for (const t of tokenState.tokens) {
     const opt = document.createElement('option');
     opt.value = t.name;
-    opt.textContent = tokenStatusLabel(t);
+    opt.textContent = t.name;
     sel.appendChild(opt);
   }
 
@@ -234,26 +212,7 @@ function renderTokenDropdown(response, syncSelection = true) {
   if (sel.value !== '__custom__') {
     setDllForSelection(sel.value);
     // Sync the running agent so it uses the correct named-token DLL
-    if (syncSelection) {
-      syncAgentTokenSelection(sel.value).catch((err) => console.warn('Failed to sync token on load:', err));
-    }
-  }
-}
-
-async function refreshTokenConnections() {
-  if (!tokenState.baseUrl || tokenState.refreshing || (Date.now() - tokenState.refreshedAt) < 2000) return;
-  tokenState.refreshing = true;
-  try {
-    const response = await fetch(`${tokenState.baseUrl}/tokens`, { headers: tokenState.headers });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const body = await response.json();
-    tokenState.tokens = Array.isArray(body.tokens) ? body.tokens : [];
-    tokenState.refreshedAt = Date.now();
-    renderTokenDropdown(body, false);
-  } catch (err) {
-    console.warn('Failed to refresh token connection status:', err);
-  } finally {
-    tokenState.refreshing = false;
+    syncAgentTokenSelection(sel.value).catch((err) => console.warn('Failed to sync token on load:', err));
   }
 }
 
@@ -264,7 +223,6 @@ async function load() {
   const tokenSelect = $('tokenName');
   if (tokenSelect && !tokenSelect.options.length) tokenSelect.appendChild(makeCustomOption());
   if (tokenSelect) tokenSelect.addEventListener('change', () => { handleTokenChange(); });
-  if (tokenSelect) tokenSelect.addEventListener('focus', () => { refreshTokenConnections(); });
 
   updateAgentUrl();
   try { refreshStatus(); } catch {}
@@ -310,7 +268,6 @@ async function load() {
     // retrying fetch to handle agent startup delays
     const j = await fetchTokensWithRetry(base, headers);
     tokenState.tokens = Array.isArray(j.tokens) ? j.tokens : [];
-    tokenState.refreshedAt = Date.now();
     renderTokenDropdown(j);
     
   } catch (err) {
