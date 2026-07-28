@@ -206,11 +206,10 @@ async function promptPinEnsuringToken(dll, promptMessage, tokenMissingMessage, o
     throw err;
   }
 
-  console.log(`[pin-timing ${new Date().toISOString()}] token precheck completed durationMs=${Date.now() - startedAt}`);
+  console.log(`[pin-timing] token-check-ms=${Date.now() - tokenCheckStartedAt}`);
   const promptStartedAt = Date.now();
-  console.log(`[pin-timing ${new Date().toISOString()}] prompt request started`);
   const pin = await promptPinInteractive(promptMessage);
-  console.log(`[pin-timing ${new Date().toISOString()}] prompt completed durationMs=${Date.now() - promptStartedAt}`);
+  console.log(`[pin-timing] prompt-ms=${Date.now() - promptStartedAt}`);
 
   return pin;
 }
@@ -1062,8 +1061,8 @@ class TokenSigner extends Signer {
     const sortedSchemas = sortedAttrEntries.map((entry) => asn1js.fromBER(ab(entry.der)).result);
     const innerSetDER  = Buffer.from(new asn1js.Set({ value: sortedSchemas }).toBER(false));
 
-    const DETECTED_CKA_ID_HEX = this.detectedIdHex || detectSigningKey(this.dll, this.pin).idHex;
-    const sig = this.signWithToken(innerSetDER, DETECTED_CKA_ID_HEX);
+    const detectedIdHex = this.detectedIdHex || detectSigningKey(this.dll, this.pin).idHex;
+    const sig = this.signWithToken(innerSetDER, detectedIdHex);
     si.signature = new asn1js.OctetString({ valueHex: ab(sig) });
 
     // Optionally add LTV revocation info as unsigned attribute(s)
@@ -1869,7 +1868,6 @@ app.post('/token/select', requireAuth, (req, res) => {
       return res.status(400).json({ ok: false, message: 'Provide tokenName or dll' });
     }
     picked = selected; // reset/replace cached pick
-    pkcs11lib.clearSigningKeyCache();
     TOKEN_STATUS_CACHE = { dll: '', checkedAt: 0, slotPresent: false };
     res.json({ ok: true, dll: selected.dll, slotPresent: !!selected.slotPresent, tokenName: USER_SELECTED_TOKEN });
   } catch (e) {
@@ -1881,7 +1879,6 @@ app.post('/token/select', requireAuth, (req, res) => {
 app.post('/token/clear', requireAuth, (req, res) => {
   USER_SELECTED_DLL = '';
   USER_SELECTED_TOKEN = '';
-  pkcs11lib.clearSigningKeyCache();
   TOKEN_STATUS_CACHE = { dll: '', checkedAt: 0, slotPresent: false };
   picked = null;
   res.json({ ok: true });

@@ -14,7 +14,10 @@ function loadJsonConfig() {
     const overridePath = process.env.DSC_CONFIG_PATH && process.env.DSC_CONFIG_PATH.trim();
     const candidates = [];
     if (overridePath) candidates.push(overridePath);
-    // Relative to this file's location (works regardless of CWD, e.g. when spawned from electron-app/)
+    // For bundled/obfuscated code (esbuild bundles into single file, __dirname points to agent/)
+    candidates.push(path.join(__dirname, 'dsc-agent.config.json'));
+    candidates.push(path.join(__dirname, 'agent.config.json'));
+    // For dev mode (this file is at agent/lib/config.js, so __dirname is agent/lib/)
     candidates.push(path.join(__dirname, '..', '..', 'dsc-agent.config.json'));
     candidates.push(path.join(__dirname, '..', '..', 'agent.config.json'));
     // project root relative files
@@ -52,6 +55,7 @@ const DEFAULT_CANDIDATES = [
   '/Library/Frameworks/eToken.framework/Versions/Current/eToken',
   '/usr/local/lib/libeps2003csp11.dylib',
   '/usr/local/lib/libwdpkcs.dylib',
+  '/usr/local/lib/wdProxKeyUsbKeyTool/libwdpkcs_Proxkey.dylib',
   // Linux
   '/usr/lib/opensc-pkcs11.so',
   '/usr/local/lib/opensc-pkcs11.so',
@@ -75,6 +79,7 @@ const cfg = Object.freeze({
       paths: [
         'C:/Windows/System32/SignatureP11.dll',
         'C:/Windows/SysWOW64/SignatureP11.dll',
+        '/usr/local/lib/wdProxKeyUsbKeyTool/libwdpkcs_Proxkey.dylib',
         '/usr/lib/libSignatureP11.so',
         '/usr/local/lib/libSignatureP11.so',
         '/usr/local/lib/libSignatureP11.dylib',
@@ -132,7 +137,7 @@ const cfg = Object.freeze({
         '/usr/local/lib/libwdpkcs.so',
         '/usr/local/lib/libwdpkcs.dylib',
       ],
-    },
+    }
   },
   PKCS11_DLL: process.env.PKCS11_DLL || (fileCfg.pkcs11Dll || ''),
   DSC_PIN_ENV: process.env.DSC_PIN || (fileCfg.pin || ''),

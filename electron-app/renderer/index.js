@@ -137,7 +137,7 @@ async function fetchTokensWithRetry(base, headers, attempts = 15, delayMs = 300)
       return await rt.json();
     } catch (err) {
       if (i === attempts - 1) throw err;
-      const waitMs = Math.min(2000, delayMs * (2 ** i));
+      const waitMs = Math.min(delayMs * (2 ** i), 2000);
       console.warn(`fetch /tokens failed (attempt ${i + 1}/${attempts}): ${err}. Retrying in ${waitMs}ms`);
       await new Promise(r => setTimeout(r, waitMs));
     }
