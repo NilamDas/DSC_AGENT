@@ -44,7 +44,8 @@ Quick Start (ES Module)
    console.log(res.results);
 
 Notes
-- Discovery scans ports `[18080, 18081, 18082]` with a short timeout; override if needed.
+- Discovery scans ports `[18080, 18081, 18082]` and retries for up to 20 seconds while the desktop agent starts.
+- Override discovery timing with `discover(requestTimeoutMs, ports, startupWaitMs)`.
 - Your web app’s origin must be allowed by the agent’s `ALLOW_ORIGINS` setting.
 - The agent binds to `127.0.0.1` only; calls never leave the machine.
 - If the agent supports prompting (see `health().promptAvailable`), prefer `requirePin`/`rememberSessionPin` over sending `pin` directly.

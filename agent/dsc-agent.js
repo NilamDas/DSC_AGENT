@@ -88,6 +88,8 @@ timeServerClient.configure({
 let SESSION_PIN = '';
 let USER_SELECTED_DLL = '';
 let USER_SELECTED_TOKEN = '';
+const TOKEN_STATUS_CACHE_MS = 5000;
+let TOKEN_STATUS_CACHE = { dll: '', checkedAt: 0, slotPresent: false };
 
 const OID = {
   data: '1.2.840.113549.1.7.1',
@@ -118,12 +120,23 @@ const upload = multer({
 });
 
 function ensureTokenReady(dll) {
+  const now = Date.now();
+  if (
+    TOKEN_STATUS_CACHE.dll === dll
+    && TOKEN_STATUS_CACHE.slotPresent
+    && (now - TOKEN_STATUS_CACHE.checkedAt) < TOKEN_STATUS_CACHE_MS
+  ) {
+    return true;
+  }
   try {
     pkcs11lib.withSession(dll, '', (p11, session) => {
       try { p11.C_GetSessionInfo(session); } catch { }
       return true;
     });
+    TOKEN_STATUS_CACHE = { dll, checkedAt: Date.now(), slotPresent: true };
+    return true;
   } catch (err) {
+    TOKEN_STATUS_CACHE = { dll, checkedAt: Date.now(), slotPresent: false };
     const msg = (err && err.message) ? String(err.message) : 'DSC token not detected';
     if (/No token present|token not present|slot|CKR_SLOT_NOT_PRESENT|CKR_TOKEN_NOT_PRESENT/i.test(msg)) {
       const missing = new Error('DSC token not detected');
@@ -132,6 +145,21 @@ function ensureTokenReady(dll) {
       throw missing;
     }
     throw err;
+  }
+}
+
+function getTokenPresenceCached(dll) {
+  if (
+    TOKEN_STATUS_CACHE.dll === dll
+    && (Date.now() - TOKEN_STATUS_CACHE.checkedAt) < TOKEN_STATUS_CACHE_MS
+  ) {
+    return TOKEN_STATUS_CACHE.slotPresent;
+  }
+  try {
+    ensureTokenReady(dll);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -163,8 +191,7 @@ function respondSigningError(res, err) {
 const waitFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function promptPinEnsuringToken(dll, promptMessage, tokenMissingMessage, options = {}) {
-  const startedAt = Date.now();
-  console.log(`[pin-timing ${new Date().toISOString()}] token precheck started`);
+  const tokenCheckStartedAt = Date.now();
   try {
     ensureTokenReady(dll);
   } catch (err) {
@@ -176,10 +203,13 @@ async function promptPinEnsuringToken(dll, promptMessage, tokenMissingMessage, o
     throw err;
   }
 
+  console.log(`[pin-timing] token-check-ms=${Date.now() - tokenCheckStartedAt}`);
+  const promptStartedAt = Date.now();
   console.log(`[pin-timing ${new Date().toISOString()}] token precheck completed durationMs=${Date.now() - startedAt}`);
   const promptStartedAt = Date.now();
   console.log(`[pin-timing ${new Date().toISOString()}] prompt request started`);
   const pin = await promptPinInteractive(promptMessage);
+  console.log(`[pin-timing] prompt-ms=${Date.now() - promptStartedAt}`);
   console.log(`[pin-timing ${new Date().toISOString()}] prompt completed durationMs=${Date.now() - promptStartedAt}`);
 
   const postCheckStartedAt = Date.now();
@@ -232,16 +262,21 @@ function resolveTimeServerIdentityFromToken(dll, pin = '') {
   return out;
 }
 
-function buildTimeServerUserBody(reqBody = {}) {
+function buildTimeServerUserBody(reqBody = {}, detectedIdentity = {}) {
   const body = reqBody && typeof reqBody === 'object' ? { ...reqBody } : {};
-  try {
-    const { dll } = ensureDllPicked();
-    const pin = (body.pin || SESSION_PIN || DSC_PIN_ENV || '').toString();
-    const identity = resolveTimeServerIdentityFromToken(dll, pin);
-    if (!body.name && identity.name) body.name = identity.name;
-    if (!body.serialNumber && identity.serialNumber) body.serialNumber = identity.serialNumber;
-    if (!body.machineHash && identity.serialNumber) body.machineHash = identity.serialNumber;
-  } catch { }
+  if (!body.name && detectedIdentity.name) body.name = String(detectedIdentity.name).trim();
+  if (!body.serialNumber && detectedIdentity.serialNumber) body.serialNumber = String(detectedIdentity.serialNumber).trim();
+  if (!body.machineHash && detectedIdentity.serialNumber) body.machineHash = String(detectedIdentity.serialNumber).trim();
+  if (!body.name || !body.machineHash) {
+    try {
+      const { dll } = ensureDllPicked();
+      const pin = (body.pin || SESSION_PIN || DSC_PIN_ENV || '').toString();
+      const identity = resolveTimeServerIdentityFromToken(dll, pin);
+      if (!body.name && identity.name) body.name = identity.name;
+      if (!body.serialNumber && identity.serialNumber) body.serialNumber = identity.serialNumber;
+      if (!body.machineHash && identity.serialNumber) body.machineHash = identity.serialNumber;
+    } catch { }
+  }
   return body;
 }
 
@@ -1011,8 +1046,8 @@ async function stampPreviousSignersNote(pdfBytes, lines, position = { x: 36, y: 
 }
 
 class TokenSigner extends Signer {
-  constructor({ dll, pin, signerCert, intermediates, includeESS, signingTime }) {
-    super(); this.dll = dll; this.pin = pin; this.signerCert = signerCert; this.intermediates = intermediates||[]; this.includeESS = !!includeESS; this.signingTime = signingTime || null;
+  constructor({ dll, pin, signerCert, intermediates, includeESS, signingTime, detectedIdHex }) {
+    super(); this.dll = dll; this.pin = pin; this.signerCert = signerCert; this.intermediates = intermediates||[]; this.includeESS = !!includeESS; this.signingTime = signingTime || null; this.detectedIdHex = detectedIdHex || '';
   }
   signWithToken(innerSetDER, detectedIdHex) {
     return withSession(this.dll, this.pin, (p11, s) => {
@@ -1070,9 +1105,8 @@ class TokenSigner extends Signer {
     const sortedSchemas = sortedAttrEntries.map((entry) => asn1js.fromBER(ab(entry.der)).result);
     const innerSetDER  = Buffer.from(new asn1js.Set({ value: sortedSchemas }).toBER(false));
 
-    // Detect correct key (id + cert) fresh per call to avoid stale state
-    const { idHex: DETECTED_CKA_ID_HEX } = detectSigningKey(this.dll, this.pin);
-    const sig = this.signWithToken(innerSetDER, DETECTED_CKA_ID_HEX);
+    const detectedIdHex = this.detectedIdHex || detectSigningKey(this.dll, this.pin).idHex;
+    const sig = this.signWithToken(innerSetDER, detectedIdHex);
     si.signature = new asn1js.OctetString({ valueHex: ab(sig) });
 
     // Optionally add LTV revocation info as unsigned attribute(s)
@@ -1518,7 +1552,7 @@ async function signWithUnifiedFlow(inputBuf, body, dll, pin) {
   const anchor = (body && typeof body.anchor === 'string') ? String(body.anchor).toLowerCase() : 'top-left';
   const requestedPageIndex = normalizeRequestedPageIndex(body && body.page);
 
-  const { certDER } = detectSigningKey(dll, pin);
+  const { idHex, certDER } = detectSigningKey(dll, pin);
   const asn = asn1js.fromBER(ab(certDER));
   const signerCert = new pkijs.Certificate({ schema: asn.result });
   const intermediates = await fetchIntermediatesIfRequested(signerCert, embedIntermediates);
@@ -1536,7 +1570,7 @@ async function signWithUnifiedFlow(inputBuf, body, dll, pin) {
     stampAllPages,
   );
 
-  const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
+  const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime, detectedIdHex: idHex });
   const signedPdf = await new SignPdf().sign(prepared, signer);
   return signedPdf;
 }
@@ -1811,20 +1845,8 @@ function ensureDllPicked() {
 // removed caching of slotPresent to reflect real-time token presence 
 app.get('/health', (req, res) => {
   try {
-    // Keep DLL selection cached
     const selected = ensureDllPicked();
-    console.log('Health check using DLL:', selected.dll);
-    // Re-detect slotPresent fresh each call (lightweight, ~10-50ms)
-    let slotPresent = false;
-    try {
-      pkcs11lib.withSession(selected.dll, '', (p11, session) => {
-        slotPresent = true;
-        return true;
-      });
-    } catch (e) {
-      slotPresent = false;
-    }
-
+    const slotPresent = getTokenPresenceCached(selected.dll);
     res.json({ ok: true, version: VERSION, dll: selected.dll, slotPresent, requirePinPerSign: REQUIRE_PIN_PER_SIGN, promptAvailable: !!PIN_PROMPT_URL });
   }
   catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -1871,6 +1893,7 @@ app.post('/token/select', requireAuth, (req, res) => {
       return res.status(400).json({ ok: false, message: 'Provide tokenName or dll' });
     }
     picked = selected; // reset/replace cached pick
+    TOKEN_STATUS_CACHE = { dll: '', checkedAt: 0, slotPresent: false };
     res.json({ ok: true, dll: selected.dll, slotPresent: !!selected.slotPresent, tokenName: USER_SELECTED_TOKEN });
   } catch (e) {
     res.status(500).json({ ok: false, message: e.message });
@@ -1881,6 +1904,7 @@ app.post('/token/select', requireAuth, (req, res) => {
 app.post('/token/clear', requireAuth, (req, res) => {
   USER_SELECTED_DLL = '';
   USER_SELECTED_TOKEN = '';
+  TOKEN_STATUS_CACHE = { dll: '', checkedAt: 0, slotPresent: false };
   picked = null;
   res.json({ ok: true });
 });
@@ -2087,10 +2111,14 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
     assertNoExistingSignature(inputBuf);
 
     // Detect signer cert first
-    const { idHex, certDER } = detectSigningKey(dll, pin);
+    const { idHex, certDER, tokenSerial } = detectSigningKey(dll, pin);
     const asn = asn1js.fromBER(ab(certDER));
     const signerCert = new pkijs.Certificate({ schema: asn.result });
-    const tsBody = buildTimeServerUserBody({ ...(req.body || {}), pin });
+    const userName = signerCert.subject.typesAndValues.find(tv => tv.type === '2.5.4.3')?.value.valueBlock.value || 'Unknown';
+    const tsBody = buildTimeServerUserBody(
+      { ...(req.body || {}), pin },
+      { name: userName, serialNumber: tokenSerial },
+    );
     remoteApiKey = resolveRemoteApiKey(req, tsBody);
     try {
       const authPayload = buildCreateAuthorizationPayload({
@@ -2112,7 +2140,6 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
     }
 
     const intermediates = await fetchIntermediatesIfRequested(signerCert, embedIntermediates);
-    const userName = signerCert.subject.typesAndValues.find(tv => tv.type === '2.5.4.3')?.value.valueBlock.value || 'Unknown';
     const signingTime2 = authorizationContext.signingTime;
     const signingTime = signingTime2;
 
@@ -2218,7 +2245,7 @@ app.post('/sign/pdf', requireAuth, async (req, res) => {
       console.warn('Failed to move widget annotation:', moveErr.message || moveErr);
     }
 
-    const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
+    const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime, detectedIdHex: idHex });
     const signedPdf = await new SignPdf().sign(prepared, signer);
     localSignCompleted = true;
 
@@ -2288,12 +2315,15 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
       }
     }
     // Detect signer and intermediates once for the batch
-    const { idHex, certDER } = detectSigningKey(dll, pin);
+    const { idHex, certDER, tokenSerial } = detectSigningKey(dll, pin);
     const asn = asn1js.fromBER(ab(certDER));
     const signerCert = new pkijs.Certificate({ schema: asn.result });
     const intermediates = await fetchIntermediatesIfRequested(signerCert, embedIntermediates);
     const userName = signerCert.subject.typesAndValues.find(tv => tv.type === '2.5.4.3')?.value.valueBlock.value || 'Unknown';
-    const tsBody = buildTimeServerUserBody({ ...(req.body || {}), pin });
+    const tsBody = buildTimeServerUserBody(
+      { ...(req.body || {}), pin },
+      { name: userName, serialNumber: tokenSerial },
+    );
     const remoteApiKey = resolveRemoteApiKey(req, tsBody);
     const signerIdentity = {
       name: tsBody.name || userName,
@@ -2452,7 +2482,7 @@ app.post('/sign/pdf-batch', requireAuth, async (req, res) => {
           pdfWithPlaceholder = plainAddPlaceholder({ pdfBuffer: Buffer.from(pdfForPlaceholder), reason, name: userName, signatureLength: 32768, widgetRect });
         }
 
-        const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
+        const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime, detectedIdHex: idHex });
         const signedPdf = await new SignPdf().sign(pdfWithPlaceholder, signer);
         localSignCompleted = true;
         return { ok: true, signedPdfBase64: signedPdf.toString('base64') };
@@ -2596,12 +2626,15 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
     } catch { }
 
     // Detect signer key + chain
-    const { idHex, certDER } = detectSigningKey(dll, pin);
+    const { idHex, certDER, tokenSerial } = detectSigningKey(dll, pin);
     const asn = asn1js.fromBER(ab(certDER));
     const signerCert = new pkijs.Certificate({ schema: asn.result });
     const intermediates = await fetchIntermediatesIfRequested(signerCert, embedIntermediates);
     const userName = signerCert.subject.typesAndValues.find(tv => tv.type === '2.5.4.3')?.value.valueBlock.value || 'Unknown';
-    const tsBody = buildTimeServerUserBody({ ...(req.body || {}), pin });
+    const tsBody = buildTimeServerUserBody(
+      { ...(req.body || {}), pin },
+      { name: userName, serialNumber: tokenSerial },
+    );
     remoteApiKey = resolveRemoteApiKey(req, tsBody);
     try {
       authorizationContext = await createSigningAuthorization({
@@ -2806,7 +2839,7 @@ app.post('/sign/pdf-resign-flatten', requireAuth, async (req, res) => {
 
 
 
-    const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime });
+    const signer = new TokenSigner({ dll, pin, signerCert, intermediates, includeESS, signingTime, detectedIdHex: idHex });
     const signedPdf = await new SignPdf().sign(pdfWithPlaceholder, signer);
     localSignCompleted = true;
 

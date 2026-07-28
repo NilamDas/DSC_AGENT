@@ -57,7 +57,7 @@ export declare const utils: {
   fileToArrayBuffer(file: Blob): Promise<ArrayBuffer>;
 };
 
-export function discover(timeoutMs?: number, ports?: number[]): Promise<Client>;
+export function discover(timeoutMs?: number, ports?: number[], startupWaitMs?: number): Promise<Client>;
 export function createClient(base: string): Client;
 declare const _default: { discover: typeof discover; createClient: typeof createClient; utils: typeof utils };
 export default _default;
