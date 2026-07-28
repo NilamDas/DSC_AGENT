@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Test: Co-sign PDF</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color-scheme: light dark; }
+    body { margin: 16px; font-size: 14px; }
+    h1 { margin: 0 0 8px; font-size: 1.2rem; }
+    .intro { max-width: 760px; color: #555; margin: 0 0 16px; }
+    .row { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 8px; align-items: center; margin: 10px 0; max-width: 820px; }
+    .inline { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+    input[type="file"] { padding: 6px 0; }
+    input[type="text"], input[type="number"] { padding: 7px; border: 1px solid #7776; border-radius: 7px; }
+    button { padding: 8px 12px; border-radius: 10px; border: 1px solid #6665; background: #2b73ff; color: #fff; cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
+    #status { margin-top: 12px; min-height: 1.3em; }
+    .ok { color: #1a7f37; }
+    .err { color: #b00020; }
+    .note { color: #666; font-size: 12px; margin-top: 5px; }
+    #result { margin-top: 16px; display: none; }
+    #viewer { width: 100%; height: 520px; border: 1px solid #9993; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <p><a href="index.html">&#8592; Back to index</a></p>
+  <h1>Test: Co-sign PDF (/sign/pdf-co-sign)</h1>
+  <p class="intro">
+    Select a PDF that already contains a digital signature. Each successful request appends another
+    digital signature without flattening or removing previous signatures.
+  </p>
+
+  <div class="row">
+    <label for="pdf">Signed PDF</label>
+    <input id="pdf" type="file" accept="application/pdf" />
+  </div>
+
+  <div class="row">
+    <label for="reason">Reason</label>
+    <input id="reason" type="text" value="Approved and co-signed" />
+  </div>
+
+  <div class="row">
+    <label for="pageNum">Page</label>
+    <div>
+      <input id="pageNum" type="text" value="last" style="width: 100px" />
+      <div class="note">Use "last" or a 1-based page number.</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <label for="topLeftMode">Top-left coords</label>
+    <div>
+      <label><input id="topLeftMode" type="checkbox" checked /> Use top-left coordinates (PDF points)</label>
+      <div class="inline" style="margin-top:8px;">
+        <label>Left <input id="leftPt" type="number" value="40" step="1" style="width:80px" /></label>
+        <label>Top <input id="topPt" type="number" value="40" step="1" style="width:80px" /></label>
+      </div>
+      <div class="note">Only Left and Top are sent. The signature size is calculated automatically.</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <label for="remember">Session</label>
+    <label><input id="remember" type="checkbox" /> Remember PIN for this session</label>
+  </div>
+
+  <div class="row">
+    <label for="useLatest">Multiple signatures</label>
+    <label><input id="useLatest" type="checkbox" checked /> Use the latest co-signed result for the next click</label>
+  </div>
+
+  <div class="row">
+    <label>Action</label>
+    <button id="coSignBtn" disabled>Co-sign PDF</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="result">
+    <p class="ok">
+      <strong>Co-signed.</strong>
+      <span id="signatureInfo"></span>
+      <a id="download" download="co-signed.pdf">Download co-signed.pdf</a>
+    </p>
+    <object id="viewer" type="application/pdf"></object>
+  </div>
+
+  <script src="./client/dsc-agent-config.js"></script>
+  <script src="./client/dsc-agent-client.iife.js"></script>
+  <script>
+    const elements = {
+      file: document.getElementById('pdf'),
+      reason: document.getElementById('reason'),
+      page: document.getElementById('pageNum'),
+      topLeftMode: document.getElementById('topLeftMode'),
+      left: document.getElementById('leftPt'),
+      top: document.getElementById('topPt'),
+      remember: document.getElementById('remember'),
+      useLatest: document.getElementById('useLatest'),
+      button: document.getElementById('coSignBtn'),
+      status: document.getElementById('status'),
+      result: document.getElementById('result'),
+      signatureInfo: document.getElementById('signatureInfo'),
+      download: document.getElementById('download'),
+      viewer: document.getElementById('viewer'),
+    };
+
+    let agent = null;
+    let latestSignedPdfBase64 = '';
+    let resultObjectUrl = '';
+    let sessionPinAvailable = false;
+
+    function setStatus(message, ok = null) {
+      elements.status.textContent = message || '';
+      elements.status.className = ok === true ? 'ok' : ok === false ? 'err' : '';
+    }
+
+    function parsePage(value) {
+      const raw = String(value || '').trim();
+      if (!raw || raw.toLowerCase() === 'last') return 'last';
+      const page = Number.parseInt(raw, 10);
+      if (!Number.isFinite(page) || page < 1) throw new Error('Page must be "last" or a positive number.');
+      return page;
+    }
+
+    function base64ToBlob(base64) {
+      const binary = atob(base64);
+      const chunks = [];
+      for (let offset = 0; offset < binary.length; offset += 0x8000) {
+        const slice = binary.slice(offset, offset + 0x8000);
+        const bytes = new Uint8Array(slice.length);
+        for (let index = 0; index < slice.length; index += 1) bytes[index] = slice.charCodeAt(index);
+        chunks.push(bytes);
+      }
+      return new Blob(chunks, { type: 'application/pdf' });
+    }
+
+    async function getInputPdfBase64() {
+      if (elements.useLatest.checked && latestSignedPdfBase64) return latestSignedPdfBase64;
+      const file = elements.file.files[0];
+      if (!file) throw new Error('Choose an already signed PDF first.');
+      const bytes = await window.DSCAgent.utils.fileToArrayBuffer(file);
+      return window.DSCAgent.utils.toBase64(bytes);
+    }
+
+    async function discoverAgent() {
+      try {
+        agent = await window.DSCAgent.discover();
+        const health = await agent.health();
+        elements.button.disabled = false;
+        setStatus(`Agent connected. Token: ${health.slotPresent ? 'present' : 'not detected'}`, true);
+      } catch (error) {
+        setStatus('Agent not found. Start the DSC Agent application and retry.', false);
+      }
+    }
+
+    elements.file.addEventListener('change', () => {
+      latestSignedPdfBase64 = '';
+      elements.result.style.display = 'none';
+      elements.button.textContent = 'Co-sign PDF';
+      setStatus(agent ? 'Ready to co-sign the selected PDF.' : '');
+    });
+
+    elements.button.addEventListener('click', async () => {
+      try {
+        if (!agent) throw new Error('Agent not connected.');
+        const health = await agent.health().catch(() => ({}));
+        const body = {
+          pdfBase64: await getInputPdfBase64(),
+          reason: elements.reason.value.trim() || 'Co-signed via DSC Agent',
+          includeESS: true,
+          embedIntermediates: true,
+          page: parsePage(elements.page.value),
+          apiKey: window.DSC_CONFIG && window.DSC_CONFIG.apiKey ? window.DSC_CONFIG.apiKey : '',
+        };
+
+        if (elements.topLeftMode.checked) {
+          body.rectMode = 'top-left';
+          body.rect = [
+            Number.parseInt(elements.left.value, 10) || 0,
+            Number.parseInt(elements.top.value, 10) || 0,
+          ];
+        }
+
+        if (health.promptAvailable) {
+          if (!sessionPinAvailable) body.requirePin = true;
+          if (elements.remember.checked) body.rememberSessionPin = true;
+        } else {
+          const pin = window.prompt('Enter token PIN to co-sign:', '');
+          if (!pin) throw new Error('PIN required.');
+          body.pin = String(pin).trim();
+        }
+
+        elements.button.disabled = true;
+        setStatus('Adding another digital signature...');
+        const response = await fetch(`${agent.base}/sign/pdf-co-sign`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          credentials: 'include',
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.message || `HTTP ${response.status}`);
+
+        if (health.promptAvailable && body.requirePin && elements.remember.checked) sessionPinAvailable = true;
+        latestSignedPdfBase64 = result.signedPdfBase64;
+        if (resultObjectUrl) URL.revokeObjectURL(resultObjectUrl);
+        resultObjectUrl = URL.createObjectURL(base64ToBlob(latestSignedPdfBase64));
+        elements.download.href = resultObjectUrl;
+        elements.viewer.data = resultObjectUrl;
+        elements.signatureInfo.textContent = `Signature fields: ${result.signatureCount}. `;
+        elements.result.style.display = 'block';
+        elements.button.textContent = 'Add Another Signature';
+        setStatus(`Done. Signature count: ${result.signatureCount}.`, true);
+      } catch (error) {
+        setStatus(error.message || String(error), false);
+      } finally {
+        elements.button.disabled = false;
+      }
+    });
+
+    discoverAgent();
+  </script>
+</body>
+</html>

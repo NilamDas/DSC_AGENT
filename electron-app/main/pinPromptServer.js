@@ -93,6 +93,18 @@ function discardPinWindow(reason) {
   }
 }
 
+function resolvePinHtmlPath() {
+  const candidates = [];
+  try { candidates.push(path.join(app.getAppPath(), 'renderer', 'pin.html')); } catch {}
+  candidates.push(path.join(__dirname, '..', 'renderer', 'pin.html'));
+  candidates.push(path.join(__dirname, '..', '..', 'renderer', 'pin.html'));
+  const resolved = candidates.find((candidate) => {
+    try { return fs.existsSync(candidate); } catch { return false; }
+  });
+  if (!resolved) throw new Error(`PIN window file not found. Checked: ${candidates.join(', ')}`);
+  return resolved;
+}
+
 function createPinWindow() {
   if (pinPrompt.win && !pinPrompt.win.isDestroyed() && pinPrompt.windowReady) {
     return pinPrompt.windowReady;
@@ -174,6 +186,12 @@ async function ensurePinWindowReady() {
     return createPinWindow();
   }
   return pinPrompt.windowReady;
+}
+
+function prewarmPinWindow() {
+  ensurePinWindowReady().catch((error) => {
+    logPin(`background prewarm failed: ${error && error.message ? error.message : String(error)}`);
+  });
 }
 
 function activePromptIsHealthy() {
@@ -267,8 +285,9 @@ app.on('before-quit', () => {
 
 function ensureReady({ log } = {}) {
   if (typeof log === 'function') pinPrompt.logger = log;
-  if (pinPrompt.server && pinPrompt.port && pinPrompt.token && pinPrompt.windowReady) {
-    return pinPrompt.windowReady.then(() => ({ port: pinPrompt.port, token: pinPrompt.token }));
+  if (pinPrompt.server && pinPrompt.port && pinPrompt.token) {
+    prewarmPinWindow();
+    return Promise.resolve({ port: pinPrompt.port, token: pinPrompt.token });
   }
   if (pinPrompt.ready) return pinPrompt.ready;
 
@@ -329,22 +348,13 @@ function ensureReady({ log } = {}) {
       pinPrompt.ready = null;
       reject(error);
     });
-    server.listen(0, '127.0.0.1', async () => {
+    server.listen(0, '127.0.0.1', () => {
       pinPrompt.server = server;
       pinPrompt.port = server.address().port;
       pinPrompt.token = token;
       logPin(`prompt server listening on 127.0.0.1:${pinPrompt.port}`);
-      try {
-        await ensurePinWindowReady();
-        resolve({ port: pinPrompt.port, token: pinPrompt.token });
-      } catch (error) {
-        try { server.close(); } catch {}
-        pinPrompt.server = null;
-        pinPrompt.port = null;
-        pinPrompt.token = null;
-        pinPrompt.ready = null;
-        reject(error);
-      }
+      prewarmPinWindow();
+      resolve({ port: pinPrompt.port, token: pinPrompt.token });
     });
   });
 
