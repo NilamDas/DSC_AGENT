@@ -13,8 +13,8 @@
   "homepage": "https://example.com/dsc-agent",
   "icon": "assets/icon.png",
   "scripts": {
-    "dev": "electron .",
-    "electron": "electron .",
+    "dev": "env -u ELECTRON_RUN_AS_NODE electron .",
+    "electron": "env -u ELECTRON_RUN_AS_NODE electron .",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
     "build:mac": "electron-builder --mac",

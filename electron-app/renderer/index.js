@@ -49,16 +49,9 @@ function updateButtons(isRunning, tokenPresent) {
     btnStart.disabled = false;
     btnStop.disabled = true;
   } else {
-    // Agent is running
-    if (tokenPresent) {
-      // Token found: Start disabled, Stop enabled
-      btnStart.disabled = true;
-      btnStop.disabled = false;
-    } else {
-      // Running but no token: Start enabled (still allow retry), Stop disabled
-      btnStart.disabled = false;
-      btnStop.disabled = true;
-    }
+    // Agent is running, regardless of whether the token is inserted.
+    btnStart.disabled = true;
+    btnStop.disabled = false;
   }
 }
 
@@ -67,11 +60,35 @@ function updateButtons(isRunning, tokenPresent) {
 
 
 let lastTokenState = null;
+
+function updateSelectedTokenConnection(dll, connected) {
+  if (!dll || !tokenState.tokens.length) return;
+  const token = tokenState.tokens.find((item) =>
+    (item.candidates || []).some((candidate) => normalizePath(candidate.path) === normalizePath(dll))
+  );
+  if (!token || token.connected === connected) return;
+  for (const candidate of token.candidates || []) {
+    if (normalizePath(candidate.path) === normalizePath(dll)) candidate.connected = connected;
+  }
+  token.connected = connected;
+  renderTokenDropdown({ selected: { tokenName: tokenState.selected } }, false);
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 2500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function refreshStatus() {
   try {
     const port = (settings.DSC_AGENT_PORT || '').trim() || '18080';
     const base = `http://127.0.0.1:${port}`;
-    const r = await fetch(base + '/health');
+    const r = await fetchWithTimeout(base + '/health');
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     const currentTokenState = j.slotPresent ? 'present' : 'absent';
@@ -117,7 +134,7 @@ function normalizePath(p) {
 async function fetchTokensWithRetry(base, headers, attempts = 15, delayMs = 300) {
   for (let i = 0; i < attempts; i++) {
     try {
-      const rt = await fetch(base + '/tokens', { headers });
+      const rt = await fetchWithTimeout(base + '/tokens', { headers }, 6000);
       if (!rt.ok) throw new Error('HTTP ' + rt.status);
       return await rt.json();
     } catch (err) {
@@ -160,9 +177,9 @@ async function syncAgentTokenSelection(name) {
   const headers = { ...tokenState.headers, 'Content-Type': 'application/json' };
   try {
     if (name && name !== '__custom__') {
-      await fetch(`${tokenState.baseUrl}/token/select`, { method: 'POST', headers, body: JSON.stringify({ tokenName: name }) });
+      await fetchWithTimeout(`${tokenState.baseUrl}/token/select`, { method: 'POST', headers, body: JSON.stringify({ tokenName: name }) }, 6000);
     } else {
-      await fetch(`${tokenState.baseUrl}/token/clear`, { method: 'POST', headers });
+      await fetchWithTimeout(`${tokenState.baseUrl}/token/clear`, { method: 'POST', headers }, 6000);
     }
   } catch (err) {
     console.warn('Failed to sync token selection:', err);
@@ -212,7 +229,26 @@ function renderTokenDropdown(response) {
   if (sel.value !== '__custom__') {
     setDllForSelection(sel.value);
     // Sync the running agent so it uses the correct named-token DLL
-    syncAgentTokenSelection(sel.value).catch((err) => console.warn('Failed to sync token on load:', err));
+    if (syncSelection) {
+      syncAgentTokenSelection(sel.value).catch((err) => console.warn('Failed to sync token on load:', err));
+    }
+  }
+}
+
+async function refreshTokenConnections() {
+  if (!tokenState.baseUrl || tokenState.refreshing || (Date.now() - tokenState.refreshedAt) < 2000) return;
+  tokenState.refreshing = true;
+  try {
+    const response = await fetchWithTimeout(`${tokenState.baseUrl}/tokens`, { headers: tokenState.headers }, 6000);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const body = await response.json();
+    tokenState.tokens = Array.isArray(body.tokens) ? body.tokens : [];
+    tokenState.refreshedAt = Date.now();
+    renderTokenDropdown(body, false);
+  } catch (err) {
+    console.warn('Failed to refresh token connection status:', err);
+  } finally {
+    tokenState.refreshing = false;
   }
 }
 
@@ -301,11 +337,11 @@ document.getElementById('btn-save').addEventListener('click', async () => {
     if (dllPath && tokenState.baseUrl) {
       const headers = { ...tokenState.headers, 'Content-Type': 'application/json' };
       try {
-        await fetch(`${tokenState.baseUrl}/token/select`, {
+        await fetchWithTimeout(`${tokenState.baseUrl}/token/select`, {
           method: 'POST',
           headers,
           body: JSON.stringify({ dll: dllPath }),
-        });
+        }, 6000);
       } catch (syncErr) {
         console.warn('Failed to sync DLL with running agent:', syncErr);
       }
@@ -579,8 +615,8 @@ document.getElementById('btn-start').addEventListener('click', async () => {
   if (btnStart) btnStart.disabled = true;
   if (btnStop) btnStop.disabled = true;  // disable Stop while starting
   try {
-    await window.DSC.startAgent();
-    statusEl.textContent = 'Starting...';
+    const result = await window.DSC.startAgent();
+    statusEl.textContent = result && result.external ? result.message : 'Starting...';
     // actual state will be updated by refreshStatus polling
   } catch (err) {
     console.warn('startAgent failed', err);
