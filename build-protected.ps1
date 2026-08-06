@@ -287,6 +287,18 @@ try {
     try {
       Copy-Item -LiteralPath $electronPackageProtected -Destination $electronPackage -Force
       Invoke-Checked -FilePath $electronBuilder -Arguments @('--win') -WorkingDirectory (Join-Path $repoRoot 'electron-app')
+
+      $packagedAgentDir = Join-Path $repoRoot 'electron-app\dist\win-unpacked\resources\agent'
+      $requiredPackagedAgentPaths = @(
+        (Join-Path $packagedAgentDir 'dsc-agent.loader.js'),
+        (Join-Path $packagedAgentDir 'dsc-agent.jsc'),
+        (Join-Path $packagedAgentDir 'node_modules\bytenode\lib\index.js'),
+        (Join-Path $packagedAgentDir 'node_modules\pkcs11js')
+      )
+      $missingPackagedAgentPaths = @($requiredPackagedAgentPaths | Where-Object { -not (Test-Path -LiteralPath $_) })
+      if ($missingPackagedAgentPaths.Count -gt 0) {
+        throw "Protected package is missing required agent runtime files: $($missingPackagedAgentPaths -join ', ')"
+      }
     }
     finally {
       if (Test-Path -LiteralPath $electronPackageBackup) {
