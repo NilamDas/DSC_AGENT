@@ -70,6 +70,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "resources/documents",
+        "to": "documents",
+        "filter": [
+          "DSC_AGENT_CLIENT_INSTALLATION_GUIDE.docx"
+        ]
       }
     ],
     "win": {

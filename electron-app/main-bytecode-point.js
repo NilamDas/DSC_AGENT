@@ -596,6 +596,39 @@ ipcMain.handle('agent:start', async () => { await startAgent(); return { ok: tru
 ipcMain.handle('agent:stop', () => { stopAgent(); return { ok: true }; });
 ipcMain.handle('logs:get', () => ({ ok: true, logs: lastLogs.slice(-500) }));
 
+const INSTALLATION_GUIDE_NAME = 'DSC_AGENT_CLIENT_INSTALLATION_GUIDE.docx';
+
+function resolveInstallationGuidePath() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'documents', INSTALLATION_GUIDE_NAME);
+  }
+  return path.join(__dirname, 'resources', 'documents', INSTALLATION_GUIDE_NAME);
+}
+
+ipcMain.handle('document:download-installation-guide', async () => {
+  const sourcePath = resolveInstallationGuidePath();
+  if (!fs.existsSync(sourcePath)) {
+    LOG(`Client installation guide missing: ${sourcePath}`);
+    return { ok: false, error: 'Client installation guide is not available.' };
+  }
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Download DSC Agent Client Installation Guide',
+    defaultPath: path.join(app.getPath('downloads'), INSTALLATION_GUIDE_NAME),
+    filters: [{ name: 'Microsoft Word Document', extensions: ['docx'] }],
+  });
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+
+  try {
+    await fs.promises.copyFile(sourcePath, result.filePath);
+    LOG(`Client installation guide saved: ${result.filePath}`);
+    return { ok: true, file: result.filePath };
+  } catch (error) {
+    LOG(`Client installation guide save failed: ${error && error.message ? error.message : String(error)}`);
+    return { ok: false, error: error && error.message ? error.message : String(error) };
+  }
+});
+
 
 ipcMain.handle('notify', (evt, title, body) => {
   try { showTrayNotification(title || 'DSC Agent', body || ''); } catch (e) { LOG(`notify failed: ${e && e.message ? e.message : e}`); }

@@ -193,7 +193,7 @@ function respondSigningError(res, err) {
 const waitFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function promptPinEnsuringToken(dll, promptMessage, tokenMissingMessage, options = {}) {
-  const startedAt = Date.now();
+  const tokenCheckStartedAt = Date.now();
   console.log(`[pin-timing ${new Date().toISOString()}] token precheck started`);
   try {
     ensureTokenReady(dll);

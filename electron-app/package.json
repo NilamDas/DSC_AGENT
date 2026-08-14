@@ -74,6 +74,13 @@
       {
         "from": "../dsc-agent.config.json",
         "to": "dsc-agent.config.json"
+      },
+      {
+        "from": "resources/documents",
+        "to": "documents",
+        "filter": [
+          "DSC_AGENT_CLIENT_INSTALLATION_GUIDE.docx"
+        ]
       }
     ],
     "win": {

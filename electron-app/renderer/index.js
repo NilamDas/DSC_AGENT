@@ -646,3 +646,23 @@ document.getElementById('btn-stop').addEventListener('click', async () => {
     console.warn('stopAgent failed', err);
   }
 });
+
+document.getElementById('btn-download-installation-guide').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const result = await window.DSC.downloadInstallationGuide();
+    if (result && result.ok) {
+      renderDetails('Client Installation Guide', result, [
+        { label: 'Status', key: 'ok', type: 'badge', map: { true: { text: 'Downloaded successfully', class: 'ok' } } },
+        { label: 'Saved To', key: 'file', type: 'code' },
+      ]);
+    } else if (!result || !result.canceled) {
+      throw new Error((result && result.error) || 'Document download failed');
+    }
+  } catch (error) {
+    showError('Document download failed', error);
+  } finally {
+    button.disabled = false;
+  }
+});

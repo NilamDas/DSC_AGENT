@@ -8,5 +8,6 @@ contextBridge.exposeInMainWorld('DSC', {
   getLogs: () => ipcRenderer.invoke('logs:get'),
   browseDll: () => ipcRenderer.invoke('dll:browse'),
   getDllPresets: () => ipcRenderer.invoke('dll:presets'),
+  downloadInstallationGuide: () => ipcRenderer.invoke('document:download-installation-guide'),
   notify: (title, body) => ipcRenderer.invoke('notify', title, body),
 });

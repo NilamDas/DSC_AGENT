@@ -289,15 +289,16 @@ try {
       Invoke-Checked -FilePath $electronBuilder -Arguments @('--win') -WorkingDirectory (Join-Path $repoRoot 'electron-app')
 
       $packagedAgentDir = Join-Path $repoRoot 'electron-app\dist\win-unpacked\resources\agent'
-      $requiredPackagedAgentPaths = @(
+      $requiredPackagedPaths = @(
         (Join-Path $packagedAgentDir 'dsc-agent.loader.js'),
         (Join-Path $packagedAgentDir 'dsc-agent.jsc'),
         (Join-Path $packagedAgentDir 'node_modules\bytenode\lib\index.js'),
-        (Join-Path $packagedAgentDir 'node_modules\pkcs11js')
+        (Join-Path $packagedAgentDir 'node_modules\pkcs11js'),
+        (Join-Path $repoRoot 'electron-app\dist\win-unpacked\resources\documents\DSC_AGENT_INTEGRATION_DOCUMENT.docx')
       )
-      $missingPackagedAgentPaths = @($requiredPackagedAgentPaths | Where-Object { -not (Test-Path -LiteralPath $_) })
-      if ($missingPackagedAgentPaths.Count -gt 0) {
-        throw "Protected package is missing required agent runtime files: $($missingPackagedAgentPaths -join ', ')"
+      $missingPackagedPaths = @($requiredPackagedPaths | Where-Object { -not (Test-Path -LiteralPath $_) })
+      if ($missingPackagedPaths.Count -gt 0) {
+        throw "Protected package is missing required runtime files: $($missingPackagedPaths -join ', ')"
       }
     }
     finally {
