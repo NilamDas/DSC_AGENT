@@ -69,6 +69,7 @@ const DEFAULT_CANDIDATES = [
   '/usr/local/lib/libwdpkcs.so',
   '/usr/lib/libSignatureP11.so',
   '/usr/local/lib/libSignatureP11.so',
+  '/usr/lib/WatchData/ProxKey/lib/libwdpkcs_SignatureP11.so',
 ];
 
 const cfg = Object.freeze({
@@ -80,6 +81,7 @@ const cfg = Object.freeze({
         'C:/Windows/System32/SignatureP11.dll',
         'C:/Windows/SysWOW64/SignatureP11.dll',
         '/usr/local/lib/wdProxKeyUsbKeyTool/libwdpkcs_Proxkey.dylib',
+        '/usr/lib/WatchData/ProxKey/lib/libwdpkcs_SignatureP11.so',
         '/usr/lib/libSignatureP11.so',
         '/usr/local/lib/libSignatureP11.so',
         '/usr/local/lib/libSignatureP11.dylib',

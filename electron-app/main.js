@@ -3,23 +3,35 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 // Local PIN prompt micro-server (for per-sign PIN requests from the agent)
-const { ensureReady: ensurePinPromptServerReady } = require('./main/pinPromptServer');
+const { ensureReady: ensurePinPromptServerReady, initializeAppListeners } = require('./main/pinPromptServer');
 
+initializeAppListeners();
+
+// GPU crash resilience: On machines without a working GPU (VMs, containers, safe
+// graphics mode, missing drivers), the GPU process crashes. These flags force
+// Electron to fall back to software rendering so the app still works.
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('no-sandbox');
 app.commandLine.appendSwitch('disable-gpu-sandbox');
+app.commandLine.appendSwitch('disable-gpu-compositing');
+// /dev/shm may be unavailable (containers, VMs, restricted systems) which causes
+// a FATAL Chromium renderer crash and a blank window. Use /tmp for shared memory.
+app.commandLine.appendSwitch('disable-dev-shm-usage');
+// Software GL rendering — most reliable fallback for VMs/containers without GPU.
+app.commandLine.appendSwitch('use-gl', 'swiftshader');
+// Use Skia renderer for more robust software painting.
+app.commandLine.appendSwitch('enable-features', 'UseSkiaRenderer');
+// Disable the Viz display compositor — it relies on cross-process shared-memory
+// frame transport that fails in seccomp-restricted containers. Falls back to the
+// legacy software compositor which paints in-process.
+app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
+// Avoid the zygote process (fork-based) which can fail in restricted containers.
+app.commandLine.appendSwitch('no-zygote');
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox');
   app.commandLine.appendSwitch('disable-setuid-sandbox');
 }
-
-// GPU crash resilience: On some Windows machines (missing VC++ runtimes, old drivers,
-// or virtual machines), the GPU process crashes with exit_code=-1073741515 (0xC0000135).
-// These flags force Electron to fall back to software rendering so the app still works.
-app.commandLine.appendSwitch('disable-gpu-sandbox');
-app.commandLine.appendSwitch('no-sandbox');
-app.disableHardwareAcceleration();
 
 let tray = null;
 let mainWindow = null;
@@ -254,6 +266,24 @@ function createWindow() {
     LOG(`[electron] renderer process crashed (killed=${killed})`);
   });
 
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    LOG(`[electron] render process gone: reason=${details.reason} exitCode=${details.exitCode}`);
+    // Auto-recover from renderer crashes (common in software-rendering / safe
+    // graphics mode). Reload the page so the control panel comes back.
+    if (!isQuitting && details.reason === 'crashed') {
+      LOG('[electron] renderer crashed — reloading window');
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          try { mainWindow.webContents.reload(); } catch {}
+        }
+      }, 500);
+    }
+  });
+
+  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    LOG(`[renderer:${level}] ${message} (${sourceId}:${line})`);
+  });
+
   mainWindow.on('unresponsive', () => {
     LOG('[electron] window became unresponsive');
   });
@@ -276,6 +306,32 @@ function createWindow() {
       showControlPanel();
     }
   });
+
+  // Fallback: if ready-to-show never fires (e.g. renderer is slow or crashed),
+  // force-show the window after a timeout so the user isn't left with nothing.
+  const readyFallbackTimer = setTimeout(() => {
+    if (!mainWindowReady && mainWindow && !mainWindow.isDestroyed()) {
+      LOG('[electron] ready-to-show fallback: forcing window show');
+      mainWindowReady = true;
+      mainWindow.show();
+    }
+  }, 4000);
+
+  mainWindow.on('closed', () => {
+    clearTimeout(readyFallbackTimer);
+  });
+
+  // Kick a repaint once the page finishes loading — helps in software-rendering
+  // environments where the first paint can be skipped.
+  mainWindow.webContents.on('did-finish-load', () => {
+    LOG('[electron] did-finish-load fired');
+    try {
+      mainWindow.webContents.executeJavaScript(
+        `document.body.style.display = 'none'; void document.body.offsetHeight; document.body.style.display = '';`
+      ).catch(() => {});
+    } catch {}
+  });
+
   const htmlPath = path.join(__dirname, 'renderer', 'index.html');
   LOG(`createWindow: loading file ${htmlPath}`);
   mainWindow.loadFile(htmlPath);
