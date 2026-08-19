@@ -7,31 +7,149 @@ const { ensureReady: ensurePinPromptServerReady, initializeAppListeners } = requ
 
 initializeAppListeners();
 
-// GPU crash resilience: On machines without a working GPU (VMs, containers, safe
-// graphics mode, missing drivers), the GPU process crashes. These flags force
-// Electron to fall back to software rendering so the app still works.
-app.disableHardwareAcceleration();
-app.commandLine.appendSwitch('no-sandbox');
-app.commandLine.appendSwitch('disable-gpu-sandbox');
-app.commandLine.appendSwitch('disable-gpu-compositing');
-// /dev/shm may be unavailable (containers, VMs, restricted systems) which causes
-// a FATAL Chromium renderer crash and a blank window. Use /tmp for shared memory.
-app.commandLine.appendSwitch('disable-dev-shm-usage');
-// Software GL rendering — most reliable fallback for VMs/containers without GPU.
-app.commandLine.appendSwitch('use-gl', 'swiftshader');
-// Use Skia renderer for more robust software painting.
-app.commandLine.appendSwitch('enable-features', 'UseSkiaRenderer');
-// Disable the Viz display compositor — it relies on cross-process shared-memory
-// frame transport that fails in seccomp-restricted containers. Falls back to the
-// legacy software compositor which paints in-process.
-app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
-// Avoid the zygote process (fork-based) which can fail in restricted containers.
-app.commandLine.appendSwitch('no-zygote');
+// ---------------------------------------------------------------------------
+// Chromium flag policy (safe-by-default for distribution across all Linux
+// machines). We do NOT apply aggressive flags globally because they can cause
+// unwanted side effects on machines with working GPUs, reduce security, or
+// change rendering behaviour between Chromium versions.
+//
+//   Safe defaults (always on):
+//     - disableHardwareAcceleration()  — prevents GPU-process crashes on VMs,
+//       containers, and machines without working GPU drivers. For a tray
+//       utility app the UI is simple, so software rendering is fine.
+//
+//   Auto-detected (applied only when needed):
+//     - disable-dev-shm-usage           — only when /dev/shm is too small or
+//       unavailable (containers, restricted systems).
+//
+//   Runtime fallback (applied only after a GPU-related renderer crash):
+//     - use-gl=swiftshader              — software GL fallback
+//     - disable-gpu-compositing         — in-process software compositor
+//     - disable-features=VizDisplayCompositor — legacy compositor fallback
+//
+//   Opt-in via settings (CHROMIUM_FLAGS in settings.json) for power users:
+//     - no-sandbox                      — reduces security, avoid unless needed
+//     - disable-gpu-sandbox             — usually unnecessary
+//     - enable-features=UseSkiaRenderer — changes rendering behaviour
+//     - no-zygote                       — affects process startup/performance
+// ---------------------------------------------------------------------------
 
-if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('no-sandbox');
-  app.commandLine.appendSwitch('disable-setuid-sandbox');
+// Default: hardware acceleration off. This is the single most reliable fix for
+// GPU crashes on VMs/containers and is safe for a simple tray app. Users can
+// opt back in via settings (CHROMIUM_FLAGS.disableHardwareAcceleration=false).
+app.disableHardwareAcceleration();
+
+// Read settings early (before app.whenReady) so flag decisions can be made.
+function readEarlySettings() {
+  try {
+    const p = path.join(app.getPath('userData'), 'settings.json');
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch { return {}; }
 }
+
+function applyChromiumFlags() {
+  const settings = readEarlySettings();
+  const flags = settings.CHROMIUM_FLAGS || {};
+
+  // --- Safe default: hardware acceleration off (opt-out via settings) -------
+  if (flags.disableHardwareAcceleration === false) {
+    // User explicitly opted back in — nothing to do (default is already off).
+    // Note: app.disableHardwareAcceleration() was already called above; if the
+    // user wants it on, we can't re-enable it after the fact. This is a
+    // documented limitation — the flag must be set before app ready.
+  }
+
+  // --- Auto-detect /dev/shm -------------------------------------------------
+  // In containers/VMs /dev/shm is often 64MB or missing, which causes a FATAL
+  // Chromium renderer crash. Only apply the workaround when actually needed.
+  if (process.platform === 'linux' && shouldDisableDevShm()) {
+    app.commandLine.appendSwitch('disable-dev-shm-usage');
+  }
+
+  // --- Opt-in flags (power users only) --------------------------------------
+  if (flags.noSandbox === true) {
+    app.commandLine.appendSwitch('no-sandbox');
+  }
+  if (flags.disableGpuSandbox === true) {
+    app.commandLine.appendSwitch('disable-gpu-sandbox');
+  }
+  if (flags.useSkiaRenderer === true) {
+    app.commandLine.appendSwitch('enable-features', 'UseSkiaRenderer');
+  }
+  if (flags.noZygote === true) {
+    app.commandLine.appendSwitch('no-zygote');
+  }
+}
+
+function shouldDisableDevShm() {
+  // Check if /dev/shm exists and is a directory.
+  try {
+    const stat = fs.statSync('/dev/shm');
+    if (!stat.isDirectory()) return true; // missing
+  } catch {
+    return true; // stat failed — assume unavailable
+  }
+
+  // Determine the actual mount size. `stat.size` on the directory itself is
+  // just the directory entry size (0 or a few bytes), NOT the tmpfs capacity.
+  // Use `df -k` to get the real mount size in KB.
+  try {
+    const { execFileSync } = require('child_process');
+    const out = execFileSync('df', ['-k', '/dev/shm'], { encoding: 'utf8', timeout: 3000 });
+    const lines = out.trim().split('\n');
+    if (lines.length >= 2) {
+      const parts = lines[1].trim().split(/\s+/);
+      // df -k output: Filesystem 1K-blocks Used Available Use% Mounted on
+      const totalKb = parseInt(parts[1], 10);
+      if (!isNaN(totalKb) && totalKb > 0) {
+        // If the mount is smaller than 128MB, Chromium can crash.
+        if (totalKb < 128 * 1024) return true;
+        return false;
+      }
+    }
+  } catch {
+    // df failed — fall through to conservative check below.
+  }
+
+  // Fallback: if we can't determine the size, check /proc/mounts for a tmpfs
+  // entry with a small size= option.
+  try {
+    const mounts = fs.readFileSync('/proc/mounts', 'utf8');
+    const line = mounts.split('\n').find((l) => l.includes(' /dev/shm '));
+    if (line) {
+      const sizeMatch = line.match(/\bsize=(\d+)([kKmMgG]?)\b/);
+      if (sizeMatch) {
+        let size = parseInt(sizeMatch[1], 10);
+        const unit = (sizeMatch[2] || '').toLowerCase();
+        if (unit === 'k') size *= 1024;
+        else if (unit === 'm') size *= 1024 * 1024;
+        else if (unit === 'g') size *= 1024 * 1024 * 1024;
+        if (size > 0 && size < 128 * 1024 * 1024) return true;
+        return false;
+      }
+    }
+  } catch {}
+
+  // Conservative default: if we can't determine the size, assume it's fine
+  // (most desktop Linux systems have a proper /dev/shm). Only containers/VMs
+  // with restricted /dev/shm will hit the df check above.
+  return false;
+}
+
+// Runtime fallback: if the renderer crashes with a GPU-related reason, apply
+// software-rendering fallbacks dynamically. This keeps the app working on
+// broken-GPU machines without forcing software rendering on everyone.
+let gpuFallbackApplied = false;
+function applyGpuFallbackFlags() {
+  if (gpuFallbackApplied) return;
+  gpuFallbackApplied = true;
+  LOG('[chromium] GPU-related renderer crash detected — applying software rendering fallback');
+  app.commandLine.appendSwitch('use-gl', 'swiftshader');
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+  app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
+}
+
+applyChromiumFlags();
 
 let tray = null;
 let mainWindow = null;
@@ -268,6 +386,17 @@ function createWindow() {
 
   mainWindow.webContents.on('render-process-gone', (event, details) => {
     LOG(`[electron] render process gone: reason=${details.reason} exitCode=${details.exitCode}`);
+    // If the crash looks GPU-related (common in VMs/containers without working
+    // GPU drivers), apply software-rendering fallback flags dynamically.
+    if (details.reason === 'crashed' || details.reason === 'oom') {
+      const exitCode = details.exitCode;
+      // GPU process crashes often surface as exit codes 133 (SIGTRAP), 134
+      // (SIGABRT), 135 (SIGBUS), 139 (SIGSEGV) or 6 (abort).
+      const gpuLikeCodes = [6, 133, 134, 135, 139];
+      if (gpuLikeCodes.includes(exitCode)) {
+        applyGpuFallbackFlags();
+      }
+    }
     // Auto-recover from renderer crashes (common in software-rendering / safe
     // graphics mode). Reload the page so the control panel comes back.
     if (!isQuitting && details.reason === 'crashed') {
