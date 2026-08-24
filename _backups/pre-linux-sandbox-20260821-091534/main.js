@@ -3,39 +3,15 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 // Local PIN prompt micro-server (for per-sign PIN requests from the agent)
-const { ensureReady: ensurePinPromptServerReady } = require('./pinPromptServer.loader.js');
-// Linux-specific Chromium sandbox compatibility (deb/rpm/AppImage).
-const { applyLinuxSandboxStrategy } = require('./main/linux/sandbox');
+const { ensureReady: ensurePinPromptServerReady, initializeAppListeners } = require('./main/pinPromptServer');
 
-// ---------------------------------------------------------------------------
-// Path resolution for packaged vs dev mode.
-//
-// DEV mode:      this file runs from electron-app/  →  __dirname = <repo>/electron-app
-// PACKAGED mode: this file is bundled into app.asar/runtime/electron/main.obf.js
-//                →  __dirname = <app>/resources/app.asar/runtime/electron
-//
-// In packaged mode, renderer/, assets/, package.json live at the asar root
-// (2 levels above runtime/electron), and the preload script is named
-// preload.obf.js (not preload.js).
-// ---------------------------------------------------------------------------
-const IS_PACKAGED_RUNTIME = (() => {
-  try {
-    const parts = __dirname.split(path.sep).filter(Boolean);
-    return parts.length >= 2 && parts[parts.length - 1] === 'electron' && parts[parts.length - 2] === 'runtime';
-  } catch { return false; }
-})();
-const APP_BASE_PATH = IS_PACKAGED_RUNTIME ? path.resolve(__dirname, '..', '..') : __dirname;
-const PRELOAD_SCRIPT_PATH = IS_PACKAGED_RUNTIME ? path.join(__dirname, 'preload.obf.js') : path.join(__dirname, 'preload.js');
-// Helper to log path resolution info (called after LOG is defined)
-function logPathInfo() {
-  LOG(`[paths] IS_PACKAGED_RUNTIME=${IS_PACKAGED_RUNTIME} base=${APP_BASE_PATH} preload=${PRELOAD_SCRIPT_PATH}`);
-}
+initializeAppListeners();
 
 // ---------------------------------------------------------------------------
 // Chromium flag policy (safe-by-default for distribution across all Linux
 // machines). We do NOT apply aggressive flags globally because they can cause
-// unwanted side effects on machines with working GPUs, reduce security, or change
-// rendering behaviour between Chromium versions.
+// unwanted side effects on machines with working GPUs, reduce security, or
+// change rendering behaviour between Chromium versions.
 //
 //   Safe defaults (always on):
 //     - disableHardwareAcceleration()  — prevents GPU-process crashes on VMs,
@@ -62,12 +38,6 @@ function logPathInfo() {
 // GPU crashes on VMs/containers and is safe for a simple tray app. Users can
 // opt back in via settings (CHROMIUM_FLAGS.disableHardwareAcceleration=false).
 app.disableHardwareAcceleration();
-
-// Apply the Linux sandbox compatibility strategy as early as possible, before
-// app.whenReady(), so any runtime-only fallback switch is in effect before
-// Chromium spawns its first child process. This never globally disables the
-// sandbox; it only falls back when detection proves it genuinely unusable.
-applyLinuxSandboxStrategy(app.commandLine.appendSwitch.bind(app.commandLine));
 
 // Read settings early (before app.whenReady) so flag decisions can be made.
 function readEarlySettings() {
@@ -219,8 +189,6 @@ const LOG = (msg) => {
   if (lastLogs.length > 2000) lastLogs.shift();
 };
 
-// Log path resolution info once at startup
-setImmediate(() => logPathInfo());
 
 const { Notification } = require('electron');
 
@@ -234,7 +202,7 @@ function showTrayNotification(title, body) {
     const notification = new Notification({
       title: title || 'DSC Agent',
       body: body || '',
-      icon: path.join(APP_BASE_PATH, 'assets', 'icon.png')
+      icon: path.join(__dirname, 'assets', 'icon.png')
     });
     notification.show();
   } catch (err) {
@@ -285,40 +253,27 @@ function getPort(settings) {
 }
 
 function resolveAgentEntry() {
-  if (app.isPackaged) {
-    const packaged = path.join(process.resourcesPath || '', 'agent', 'dsc-agent.loader.js');
-    if (!fs.existsSync(packaged)) {
-      throw new Error(`Packaged agent entry not found: ${packaged}`);
-    }
-    return packaged;
-  }
-
-  const dev = path.join(__dirname, '..', '..', 'dist', 'agent', 'dsc-agent.loader.js');
-  if (!fs.existsSync(dev)) {
-    throw new Error(`Development agent entry not found: ${dev}`);
-  }
+  // Prefer packaged extraResources (../ copied to resources/agent), else parent repo
+  const packaged = path.join(process.resourcesPath || '', 'agent', 'dsc-agent.js');
+  if (fs.existsSync(packaged)) return packaged;
+  const dev = path.join(__dirname, '..', 'agent', 'dsc-agent.js');
   return dev;
 }
 
 function resolveNodeBin() {
+  // Prefer a bundled Node runtime if present under resources/bin/<platform>/
   const res = process.resourcesPath || '';
   const plat = process.platform;
   let candidate;
   if (plat === 'win32') candidate = path.join(res, 'bin', 'win', 'node.exe');
   else if (plat === 'darwin') candidate = path.join(res, 'bin', 'mac', 'node');
   else candidate = path.join(res, 'bin', 'linux', 'node');
-
-  if (app.isPackaged) {
-    if (candidate && fs.existsSync(candidate)) return candidate;
-    throw new Error(`Bundled Node runtime not found: ${candidate}`);
-  }
-
   if (candidate && fs.existsSync(candidate)) return candidate;
   return process.env.DSC_NODE_PATH || 'node';
 }
 
 async function startAgent() {
-  showTrayNotification('DSC Agent', 'Agent starting...')
+  showTrayNotification('DSC Agent', 'Agent starting…')
   if (agentProc) return;
   stopRequested = false; // clear any previous stop intent
   const agentPath = resolveAgentEntry();
@@ -393,12 +348,12 @@ function stopAgent() {
 // app icon path based on platform
 function getAppIcon() {
   if (process.platform === 'win32') {
-    return path.join(APP_BASE_PATH, 'assets', 'windows', 'icon.ico');
+    return path.join(__dirname, 'assets', 'windows', 'icon.ico');
   }
   if (process.platform === 'darwin') {
-    return path.join(APP_BASE_PATH, 'assets', 'mac', 'icon.icns');
+    return path.join(__dirname, 'assets', 'mac', 'icon.icns');
   }
-  return path.join(APP_BASE_PATH, 'assets', 'icon.png'); // linux
+  return path.join(__dirname, 'assets', 'icon.png'); // linux
 }
 
 
@@ -415,7 +370,7 @@ function createWindow() {
     show: false,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
-      preload: PRELOAD_SCRIPT_PATH,
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     }
@@ -506,7 +461,7 @@ function createWindow() {
     } catch {}
   });
 
-  const htmlPath = path.join(APP_BASE_PATH, 'renderer', 'index.html');
+  const htmlPath = path.join(__dirname, 'renderer', 'index.html');
   LOG(`createWindow: loading file ${htmlPath}`);
   mainWindow.loadFile(htmlPath);
   return mainWindow;
@@ -744,17 +699,17 @@ app.whenReady().then(() => {
   }
 
   // On macOS the tray icon must be a "template image" — a small monochrome
-  // PNG whose name ends with "Template". This lets macOS adapt it to light/dark
-  // menu bar automatically. Using a colour PNG causes it to be invisible or
-  // missing on macOS 13+/Sequoia.
+  // PNG whose name ends with "Template". This lets macOS adapt it to
+  // light/dark menu bar automatically. Using a colour PNG causes it to be
+  // invisible or missing on macOS 13+/Sequoia.
   let iconPath;
   if (process.platform === 'darwin') {
     // Prefer a dedicated 22x22 template icon; fall back to the 16x16 asset.
-    const templatePath = path.join(APP_BASE_PATH, 'assets', 'Mac', 'iconTemplate.png');
-    const fallbackPath = path.join(APP_BASE_PATH, 'assets', 'Mac', 'icon-16x16.png');
+    const templatePath = path.join(__dirname, 'assets', 'Mac', 'iconTemplate.png');
+    const fallbackPath = path.join(__dirname, 'assets', 'Mac', 'icon-16x16.png');
     iconPath = fs.existsSync(templatePath) ? templatePath : fallbackPath;
   } else {
-    iconPath = path.join(APP_BASE_PATH, 'assets', 'icon.png');
+    iconPath = path.join(__dirname, 'assets', 'icon.png');
   }
 
   let icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();

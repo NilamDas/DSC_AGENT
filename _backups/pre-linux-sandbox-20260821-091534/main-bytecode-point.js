@@ -4,8 +4,6 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 // Local PIN prompt micro-server (for per-sign PIN requests from the agent)
 const { ensureReady: ensurePinPromptServerReady } = require('./pinPromptServer.loader.js');
-// Linux-specific Chromium sandbox compatibility (deb/rpm/AppImage).
-const { applyLinuxSandboxStrategy } = require('./main/linux/sandbox');
 
 // ---------------------------------------------------------------------------
 // Path resolution for packaged vs dev mode.
@@ -62,12 +60,6 @@ function logPathInfo() {
 // GPU crashes on VMs/containers and is safe for a simple tray app. Users can
 // opt back in via settings (CHROMIUM_FLAGS.disableHardwareAcceleration=false).
 app.disableHardwareAcceleration();
-
-// Apply the Linux sandbox compatibility strategy as early as possible, before
-// app.whenReady(), so any runtime-only fallback switch is in effect before
-// Chromium spawns its first child process. This never globally disables the
-// sandbox; it only falls back when detection proves it genuinely unusable.
-applyLinuxSandboxStrategy(app.commandLine.appendSwitch.bind(app.commandLine));
 
 // Read settings early (before app.whenReady) so flag decisions can be made.
 function readEarlySettings() {
