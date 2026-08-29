@@ -4,6 +4,10 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 // Local PIN prompt micro-server (for per-sign PIN requests from the agent)
 const { ensureReady: ensurePinPromptServerReady, initializeAppListeners } = require('./main/pinPromptServer');
+// Linux-specific Chromium sandbox compatibility (deb/rpm/AppImage).
+// Prefer the real sandbox; apply a controlled runtime-only fallback when
+// the environment genuinely cannot use SUID chrome-sandbox (e.g. AppImage).
+const { applyLinuxSandboxStrategy } = require('./main/linux/sandbox');
 
 initializeAppListeners();
 
@@ -38,6 +42,12 @@ initializeAppListeners();
 // GPU crashes on VMs/containers and is safe for a simple tray app. Users can
 // opt back in via settings (CHROMIUM_FLAGS.disableHardwareAcceleration=false).
 app.disableHardwareAcceleration();
+
+// Apply the Linux sandbox compatibility strategy as early as possible, before
+// app.whenReady(), so the decision (and any needed --no-sandbox switch) is in
+// effect before Chromium spawns its first child process. This never globally
+// disables the sandbox; it only falls back when detection proves it unusable.
+applyLinuxSandboxStrategy(app.commandLine.appendSwitch.bind(app.commandLine));
 
 // Read settings early (before app.whenReady) so flag decisions can be made.
 function readEarlySettings() {

@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# build-mac.sh — Mac equivalent of build-protected.ps1
-# Run from the repo root: bash build-mac.sh
-# Produces a protected (obfuscated + bytecode) DMG in electron-app/dist/
+# build-linux.sh — Linux equivalent of build-mac.sh / build-protected.ps1
+# Run from the repo root: bash build-linux.sh
+# Produces a protected (obfuscated) AppImage, .deb, and .rpm in electron-app/dist/
 #
 # Differences from Windows build:
 #   - Downloads a portable Node 18 matching Electron's bundled Node version
 #   - Uses that Node for esbuild, obfuscator, and bytenode (avoids system Node mismatch)
-#   - Compiles to .jsc bytecode (same protection level as Windows)
-#   - For universal builds (arm64 + x64), compiles bytecode for both archs
+#   - Agent runs as obfuscated JS (not bytecode) so it works across different
+#     Node/V8 versions (Node 26 in dev, bundled Node 18 in production)
+#   - Electron files run as obfuscated JS (not bytecode) because Electron's V8
+#     differs from Node 18's V8 (cachedDataRejected error)
+#   - Produces AppImage, .deb, and .rpm for Linux
 
 set -euo pipefail
 
@@ -16,24 +19,24 @@ cd "$REPO_ROOT"
 
 # ─── Config ────────────────────────────────────────────────────────────────────
 NODE_VERSION="18.20.4"          # Must match Electron's bundled Node version
-BUILD_ARCH="$(uname -m)"        # Current build machine arch: arm64 or x86_64
+BUILD_ARCH="$(uname -m)"        # Current build machine arch: x86_64 or aarch64
 
 case "$BUILD_ARCH" in
   x86_64) NODE_ARCH="x64"; ELECTRON_ARCH_FLAG="--x64" ;;
-  arm64)  NODE_ARCH="arm64"; ELECTRON_ARCH_FLAG="--arm64" ;;
+  aarch64|arm64) NODE_ARCH="arm64"; ELECTRON_ARCH_FLAG="--arm64" ;;
   *)      echo "Unsupported architecture: $BUILD_ARCH"; exit 1 ;;
 esac
 
-NODE_DIR="$REPO_ROOT/electron-app/bin/mac"
+NODE_DIR="$REPO_ROOT/electron-app/bin/linux"
 NODE_BIN="$NODE_DIR/node"
-NODE_TAR="node-v${NODE_VERSION}-darwin-${NODE_ARCH}.tar.gz"
+NODE_TAR="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TAR}"
 
 # ─── Dependency checks ─────────────────────────────────────────────────────────
 echo ""
 echo "==> Checking dependencies..."
-ROOT_ESBUILD="$REPO_ROOT/node_modules/.bin/esbuild"
-ROOT_OBFUSCATOR="$REPO_ROOT/node_modules/.bin/javascript-obfuscator"
+ROOT_ESBUILD="$REPO_ROOT/electron-app/node_modules/.bin/esbuild"
+ROOT_OBFUSCATOR="$REPO_ROOT/electron-app/node_modules/.bin/javascript-obfuscator"
 ELECTRON_BUILDER="$REPO_ROOT/electron-app/node_modules/.bin/electron-builder"
 
 for f in "$ROOT_ESBUILD" "$ROOT_OBFUSCATOR" "$ELECTRON_BUILDER"; do
@@ -44,17 +47,28 @@ for f in "$ROOT_ESBUILD" "$ROOT_OBFUSCATOR" "$ELECTRON_BUILDER"; do
   fi
 done
 
+# ─── Clean stale build artifacts ───────────────────────────────────────────────
+echo ""
+echo "==> Cleaning stale build artifacts..."
+rm -rf build-artifacts dist/agent
+rm -rf electron-app/build-artifacts electron-app/runtime/electron
+rm -rf electron-app/dist/linux-unpacked
+rm -f electron-app/dist/*.AppImage electron-app/dist/*.deb electron-app/dist/*.rpm
+rm -f electron-app/dist/builder-debug.yml electron-app/dist/builder-effective-config.yaml
+mkdir -p build-artifacts dist/agent
+mkdir -p electron-app/build-artifacts electron-app/runtime/electron
+
 # ─── Resolve Node binary ───────────────────────────────────────────────────────
 # Always download a portable Node 18 matching Electron's bundled Node version.
-# The portable build is statically linked (no libnode.dylib dependency), so it
-# can be copied into the app bundle without missing shared libraries.
+# The portable build is statically linked, so it can be copied into the app
+# without missing shared libraries.
 echo ""
 echo "==> Resolving Node ${NODE_VERSION} (${NODE_ARCH})..."
 
 mkdir -p "$NODE_DIR"
 if [ -f "$NODE_BIN" ]; then
   NODE_FILE_INFO="$(file "$NODE_BIN" 2>/dev/null || true)"
-  if [ "$NODE_ARCH" = "arm64" ] && ! echo "$NODE_FILE_INFO" | grep -qi "arm64"; then
+  if [ "$NODE_ARCH" = "arm64" ] && ! echo "$NODE_FILE_INFO" | grep -qi "aarch64\|arm64"; then
     echo "    Existing Node is not arm64; replacing it."
     rm -f "$NODE_BIN"
   elif [ "$NODE_ARCH" = "x64" ] && ! echo "$NODE_FILE_INFO" | grep -Eqi "x86_64|x86-64"; then
@@ -65,7 +79,7 @@ fi
 if [ ! -f "$NODE_BIN" ]; then
   echo "    Downloading ${NODE_URL}..."
   curl -L -o "/tmp/${NODE_TAR}" "$NODE_URL"
-  tar -xzf "/tmp/${NODE_TAR}" -C "$NODE_DIR" --strip-components=2 "node-v${NODE_VERSION}-darwin-${NODE_ARCH}/bin/node"
+  tar -xzf "/tmp/${NODE_TAR}" -C "$NODE_DIR" --strip-components=2 "node-v${NODE_VERSION}-linux-${NODE_ARCH}/bin/node"
   rm "/tmp/${NODE_TAR}"
   chmod +x "$NODE_BIN"
   echo "    Downloaded: $NODE_BIN"
@@ -81,21 +95,8 @@ fi
 }
 echo "    Node version: $("$NODE_BIN" --version)"
 
-# ─── Prepare output directories ────────────────────────────────────────────────
-echo ""
-echo "==> Preparing output directories..."
-mkdir -p build-artifacts dist/agent
-mkdir -p electron-app/build-artifacts electron-app/runtime/electron
-
-# ─── Agent: bundle → obfuscate → bytecode ─────────────────────────────────────
-# NOTE: esbuild is a compiled Go binary — run it directly, NOT through $NODE_BIN
-echo ""
-echo "==> Provisioning bundled Node runtime..."
-mkdir -p electron-app/bin/mac
-# $NODE_BIN already IS electron-app/bin/mac/node (downloaded above), so no copy needed.
-# The portable Node 18 build is statically linked and has no libnode.dylib dependency.
-
 # ─── Agent: bundle → obfuscate ────────────────────────────────────────────────
+# NOTE: esbuild is a compiled Go binary — run it directly, NOT through $NODE_BIN
 echo ""
 echo "==> Bundling agent..."
 "$ROOT_ESBUILD" agent/dsc-agent.js \
@@ -181,24 +182,114 @@ echo "Electron runtime files ready"
 
 # ─── electron-builder ─────────────────────────────────────────────────────────
 echo ""
-echo "==> Building macOS app..."
+echo "==> Building Linux app (AppImage, deb, rpm)..."
 cp electron-app/package.json electron-app/package.json.bak
 cp electron-app/package.json-bytecode-point electron-app/package.json
 
 # Run electron-builder from inside electron-app/ so all relative paths resolve correctly.
 pushd electron-app > /dev/null
-CSC_IDENTITY_AUTO_DISCOVERY=false \
-  "$ELECTRON_BUILDER" --mac "$ELECTRON_ARCH_FLAG" || {
-    popd > /dev/null
-    mv "$REPO_ROOT/electron-app/package.json.bak" "$REPO_ROOT/electron-app/package.json"
-    echo "electron-builder failed"
-    exit 1
-  }
+"$ELECTRON_BUILDER" --linux "$ELECTRON_ARCH_FLAG" || {
+  popd > /dev/null
+  mv "$REPO_ROOT/electron-app/package.json.bak" "$REPO_ROOT/electron-app/package.json"
+  echo "electron-builder failed"
+  exit 1
+}
 popd > /dev/null
 
 mv electron-app/package.json.bak electron-app/package.json
 
+# ─── Post-build fixes ─────────────────────────────────────────────────────────
+echo ""
+echo "==> Applying post-build fixes..."
+
+# Fix chrome-sandbox permissions (required for Chromium sandbox on Linux).
+# The sandbox helper must be owned by root and setuid (4755) for the sandbox
+# to work. electron-builder usually handles this, but we verify and fix it.
+SANDBOX_BIN="$REPO_ROOT/electron-app/dist/linux-unpacked/chrome-sandbox"
+if [ -f "$SANDBOX_BIN" ]; then
+  chmod 4755 "$SANDBOX_BIN" 2>/dev/null || {
+    echo "    WARNING: Could not set setuid on chrome-sandbox (need root)."
+    echo "    Run: sudo chown root:root '$SANDBOX_BIN' && sudo chmod 4755 '$SANDBOX_BIN'"
+  }
+  echo "    chrome-sandbox permissions fixed: $(stat -c '%a' "$SANDBOX_BIN")"
+fi
+
+# Ensure the main binary is executable
+MAIN_BIN="$REPO_ROOT/electron-app/dist/linux-unpacked/dsc-agent-electron"
+if [ -f "$MAIN_BIN" ]; then
+  chmod +x "$MAIN_BIN"
+  echo "    Main binary executable: $MAIN_BIN"
+fi
+
+# Ensure the bundled Node runtime is executable
+NODE_RUNTIME="$REPO_ROOT/electron-app/dist/linux-unpacked/resources/bin/linux/node"
+if [ -f "$NODE_RUNTIME" ]; then
+  chmod +x "$NODE_RUNTIME"
+  echo "    Bundled Node runtime executable: $NODE_RUNTIME"
+fi
+
+# Ensure AppImage is executable
+for appimage in "$REPO_ROOT"/electron-app/dist/*.AppImage; do
+  if [ -f "$appimage" ]; then
+    chmod +x "$appimage"
+    echo "    AppImage executable: $(basename "$appimage")"
+  fi
+done
+
+# ─── Verification ─────────────────────────────────────────────────────────────
+echo ""
+echo "==> Verifying build output..."
+UNPACKED_DIR="$REPO_ROOT/electron-app/dist/linux-unpacked"
+if [ ! -d "$UNPACKED_DIR" ]; then
+  echo "ERROR: linux-unpacked directory not found!"
+  exit 1
+fi
+
+# Verify key files exist
+REQUIRED_FILES=(
+  "$UNPACKED_DIR/dsc-agent-electron"
+  "$UNPACKED_DIR/resources/app.asar"
+  "$UNPACKED_DIR/resources/agent/dsc-agent.loader.js"
+  "$UNPACKED_DIR/resources/agent/dsc-agent.obf.js"
+  "$UNPACKED_DIR/resources/agent/dsc-agent.config.json"
+  "$UNPACKED_DIR/resources/agent/node_modules/pkcs11js/build/Release/pkcs11.node"
+  "$UNPACKED_DIR/resources/bin/linux/node"
+  "$UNPACKED_DIR/resources/documents/DSC_AGENT_CLIENT_INSTALLATION_GUIDE.docx"
+)
+
+for f in "${REQUIRED_FILES[@]}"; do
+  if [ ! -f "$f" ]; then
+    echo "ERROR: Missing required file: $f"
+    exit 1
+  fi
+done
+echo "    All required files present."
+
+# Verify asar contains the runtime files
+if command -v npx > /dev/null 2>&1; then
+  ASAR_LIST=$(cd electron-app && npx asar list dist/linux-unpacked/resources/app.asar 2>/dev/null || true)
+  for entry in "/runtime/electron/main.loader.js" "/runtime/electron/main.obf.js" "/runtime/electron/preload.obf.js" "/renderer/index.html" "/assets/icon.png"; do
+    if ! echo "$ASAR_LIST" | grep -q "$entry"; then
+      echo "ERROR: app.asar missing: $entry"
+      exit 1
+    fi
+  done
+  echo "    app.asar contents verified."
+fi
+
 echo ""
 echo "==> Build complete!"
-echo "    Installer: electron-app/dist/"
-ls electron-app/dist/*.dmg electron-app/dist/*.zip 2>/dev/null || true
+echo "    Installers: electron-app/dist/"
+ls electron-app/dist/*.AppImage electron-app/dist/*.deb electron-app/dist/*.rpm 2>/dev/null || true
+echo ""
+echo "    To run the unpacked build:"
+echo "      electron-app/dist/linux-unpacked/dsc-agent-electron"
+echo ""
+echo "    If you get a sandbox error, run:"
+echo "      sudo chown root:root electron-app/dist/linux-unpacked/chrome-sandbox"
+echo "      sudo chmod 4755 electron-app/dist/linux-unpacked/chrome-sandbox"
+echo ""
+echo "    If the AppImage fails with 'libfuse.so.2' error, either:"
+echo "      - Install libfuse2:  sudo apt install libfuse2"
+echo "      - Or extract and run:  './DSC Agent-0.1.1.AppImage' --appimage-extract-and-run"
+echo "    The .deb and .rpm installers do NOT require FUSE."

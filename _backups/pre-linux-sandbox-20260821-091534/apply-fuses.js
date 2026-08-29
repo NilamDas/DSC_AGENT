@@ -14,18 +14,7 @@
 
 const path = require('path');
 const fs = require('fs');
-
-// @electron/fuses >=2 is an ESM-only module. electron-builder executes this
-// afterPack hook under the portable Node 18 (which predates Node's require(esm)
-// support), so a static `require('@electron/fuses')` throws ERR_REQUIRE_ESM.
-// Use a dynamic import() instead — supported in all CommonJS modules on Node 18+.
-let _fuses = null;
-async function loadFuses() {
-  if (_fuses) return _fuses;
-  const mod = await import('@electron/fuses');
-  _fuses = { flipFuses: mod.flipFuses, FuseVersion: mod.FuseVersion, FuseV1Options: mod.FuseV1Options };
-  return _fuses;
-}
+const { flipFuses, FuseVersion, FuseV1Options } = require('@electron/fuses');
 
 /**
  * Returns the absolute path to the Electron executable inside the packed output.
@@ -77,9 +66,7 @@ exports.default = async function afterPack(context) {
     return;
   }
 
-            console.log(`[fuses] applying to ${electronPath}`);
-
-  const { flipFuses, FuseVersion, FuseV1Options } = await loadFuses();
+  console.log(`[fuses] applying to ${electronPath}`);
 
   await flipFuses(electronPath, {
     version: FuseVersion.V1,

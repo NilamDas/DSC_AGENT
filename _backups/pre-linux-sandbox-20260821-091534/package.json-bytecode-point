@@ -32,7 +32,7 @@
   },
   "build": {
     "appId": "com.example.dscagent",
-    "productName": "dsc-agent",
+    "productName": "DSC Agent",
     "afterPack": "scripts/apply-fuses.js",
     "files": [
       "package.json",
@@ -113,7 +113,6 @@
       ]
     },
     "linux": {
-      "executableName": "dsc-agent-electron",
       "icon": "assets/linux/icon.png",
       "extraResources": [
         {
@@ -129,19 +128,10 @@
         "deb",
         "rpm"
       ],
-      "maintainer": "DSC Agent <support@example.com>",
-      "desktop": {
-        "Name": "DSC Agent",
-        "StartupWMClass": "DSC Agent"
-      }
-    },
-    "deb": {
-      "afterInstall": "scripts/linux/after-install-deb.sh",
-      "afterRemove": "scripts/linux/after-remove-deb.sh"
-    },
-    "rpm": {
-      "afterInstall": "scripts/linux/after-install-rpm.sh",
-      "afterRemove": "scripts/linux/after-remove-rpm.sh"
-    }
-  }
-}
+       "maintainer": "DSC Agent <support@example.com>"
+     },
+     "deb": {
+       "afterInstall": "scripts/fix-permissions.sh"
+     }
+   }
+ }
