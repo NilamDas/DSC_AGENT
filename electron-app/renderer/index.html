@@ -3,6 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:*;"
+    />
     <title>DSC Agent Control Panel</title>
     <style>
       :root {
@@ -686,44 +690,5 @@
     </div>
 
     <script src="index.js"></script>
-
-    <script>
-      (function(){
-        const btn = document.getElementById('pkcs11-help');
-        const pop = document.getElementById('pkcs11-popover');
-        const closeBtn = document.getElementById('pkcs11-help-close');
-        if(!btn || !pop) return;
-        
-        function open(){
-          pop.classList.add('visible');
-          btn.setAttribute('aria-expanded','true');
-          pop.setAttribute('aria-hidden','false');
-        }
-        
-        function close(){
-          pop.classList.remove('visible');
-          btn.setAttribute('aria-expanded','false');
-          pop.setAttribute('aria-hidden','true');
-        }
-        
-        btn.addEventListener('click', (e)=> { 
-          e.stopPropagation(); 
-          pop.classList.contains('visible') ? close() : open(); 
-        });
-        
-        closeBtn && closeBtn.addEventListener('click', (e)=>{ 
-          e.stopPropagation(); 
-          close(); 
-        });
-        
-        document.addEventListener('click', (e)=>{ 
-          if(!pop.contains(e.target) && e.target !== btn) close(); 
-        });
-        
-        window.addEventListener('keydown', (e)=>{ 
-          if(e.key === 'Escape') close(); 
-        });
-      })();
-    </script>
   </body>
 </html>
