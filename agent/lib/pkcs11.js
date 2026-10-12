@@ -140,6 +140,23 @@ function verifyRSAPKCS1_DI(certDER, di, sig) {
   return em.subarray(i).equals(di);
 }
 
+function assertCertificateNotExpired(certDER, nowMs = Date.now()) {
+  const cert = new crypto.X509Certificate(certDER);
+  const validToMs = Date.parse(cert.validTo);
+  if (!Number.isFinite(validToMs)) {
+    const err = new Error('Unable to determine the DSC certificate expiry date.');
+    err.code = 'DSC_CERTIFICATE_INVALID';
+    throw err;
+  }
+  if (nowMs >= validToMs) {
+    const err = new Error(`DSC certificate expired on ${cert.validTo}. Renew the certificate before signing.`);
+    err.code = 'DSC_CERTIFICATE_EXPIRED';
+    err.validTo = cert.validTo;
+    throw err;
+  }
+  return cert;
+}
+
 function probePair(p11, s, privHandle, certDER) {
   const msg = Buffer.from('signing-key-probe');
   try {
@@ -212,10 +229,23 @@ function detectSigningKey(dll, pin) {
     }
     if (!pairs.length) throw new Error('No key/cert pairs with matching CKA_ID');
 
+    let expiryError = null;
+    let hasUnexpiredPair = false;
     for (const pair of pairs) {
+      try {
+        assertCertificateNotExpired(pair.certDER);
+        hasUnexpiredPair = true;
+      } catch (err) {
+        if (err && err.code === 'DSC_CERTIFICATE_EXPIRED') {
+          expiryError = expiryError || err;
+          continue;
+        }
+        throw err;
+      }
       const res = probePair(p11, s, pair.priv.handle, pair.certDER);
       if (res.ok) return { idHex: pair.idHex, certDER: pair.certDER, tokenSerial };
     }
+    if (!hasUnexpiredPair && expiryError) throw expiryError;
     throw new Error('No usable signing key (probe failed)');
   });
 }
@@ -235,6 +265,7 @@ module.exports = {
   getAttr,
   bufToHex,
   hexEq,
+  assertCertificateNotExpired,
   detectSigningKey,
   clearSigningKeyCache,
 };
