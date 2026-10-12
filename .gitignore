@@ -10,3 +10,4 @@ client/dsc-agent-config.js
 /build-artifacts
 /dist
 /electron-app/build-artifacts
+Agent_files/eSwakshar-Agent-macOS.dmg

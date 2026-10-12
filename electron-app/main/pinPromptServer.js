@@ -256,22 +256,30 @@ function showPinDialog(message, response) {
   });
 }
 
-app.on('before-quit', () => {
-  isAppQuitting = true;
-  cancelActivePrompt('app_quit');
-  const window = pinPrompt.win;
-  pinPrompt.win = null;
-  pinPrompt.windowReady = null;
-  if (window && !window.isDestroyed()) {
-    try { window.destroy(); } catch {}
-  }
-  if (pinPrompt.server) {
-    try { pinPrompt.server.close(); } catch {}
-    pinPrompt.server = null;
-  }
-});
+function initializeAppListeners() {
+  if (!app) return; // app not available yet
+  app.on('before-quit', () => {
+    isAppQuitting = true;
+    cancelActivePrompt('app_quit');
+    const window = pinPrompt.win;
+    pinPrompt.win = null;
+    pinPrompt.windowReady = null;
+    if (window && !window.isDestroyed()) {
+      try { window.destroy(); } catch {}
+    }
+    if (pinPrompt.server) {
+      try { pinPrompt.server.close(); } catch {}
+      pinPrompt.server = null;
+    }
+  });
+}
 
-function ensureReady({ log } = {}) {
+// Defer initialization until app is ready
+if (app && typeof app.on === 'function') {
+  initializeAppListeners();
+}
+
+const ensureReady = (log) => {
   if (typeof log === 'function') pinPrompt.logger = log;
   if (pinPrompt.server && pinPrompt.port && pinPrompt.token) {
     prewarmPinWindow();
@@ -347,6 +355,6 @@ function ensureReady({ log } = {}) {
   });
 
   return pinPrompt.ready;
-}
+};
 
-module.exports = { ensureReady };
+module.exports = { ensureReady, initializeAppListeners };

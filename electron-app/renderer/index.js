@@ -5,13 +5,14 @@ const $ = (id) => document.getElementById(id);
 let settings = {};
 const tokenState = { tokens: [], baseUrl: '', headers: {}, selected: '', refreshing: false, refreshedAt: 0 };
 
-function log(o) { out.textContent = typeof o === 'string' ? o : JSON.stringify(o, null, 2);
-   if (out) {
+function log(o) {
+  const s = typeof o === 'string' ? o : JSON.stringify(o, null, 2);
+  if (out) {
     out.textContent = s;
   } else {
     console.log(s);
   }
- }
+}
 
 function setBadge(state, note = '') {
   const b = document.getElementById('status-badge');
@@ -593,24 +594,43 @@ load();
 try { window.addEventListener('focus', () => { refreshStatus(); }); } catch {}
 
 
-// PKCS#11 help toggle
-const pkHelpBtn = document.getElementById('pkcs11-help');
-const pkHelpPanel = document.getElementById('pkcs11-help-panel');
-const pkHelpClose = document.getElementById('pkcs11-help-close');
+// PKCS#11 help popover
+(function () {
+  const btn = document.getElementById('pkcs11-help');
+  const pop = document.getElementById('pkcs11-popover');
+  const closeBtn = document.getElementById('pkcs11-help-close');
+  if (!btn || !pop) return;
 
-if (pkHelpBtn && pkHelpPanel) {
-  pkHelpBtn.addEventListener('click', (e) => {
+  function open() {
+    pop.classList.add('visible');
+    btn.setAttribute('aria-expanded', 'true');
+    pop.setAttribute('aria-hidden', 'false');
+  }
+
+  function close() {
+    pop.classList.remove('visible');
+    btn.setAttribute('aria-expanded', 'false');
+    pop.setAttribute('aria-hidden', 'true');
+  }
+
+  btn.addEventListener('click', (e) => {
     e.stopPropagation();
-    pkHelpPanel.style.display = pkHelpPanel.style.display === 'none' ? 'block' : 'none';
+    pop.classList.contains('visible') ? close() : open();
   });
-  if (pkHelpClose) pkHelpClose.addEventListener('click', () => { pkHelpPanel.style.display = 'none'; });
-  // click outside closes panel
+
+  if (closeBtn) closeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    close();
+  });
+
   document.addEventListener('click', (e) => {
-    if (!pkHelpPanel.contains(e.target) && e.target !== pkHelpBtn) pkHelpPanel.style.display = 'none';
+    if (!pop.contains(e.target) && e.target !== btn) close();
   });
-  // Esc closes panel
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') pkHelpPanel.style.display = 'none'; });
-}
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') close();
+  });
+})();
 
 
 

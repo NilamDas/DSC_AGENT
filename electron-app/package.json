@@ -2,7 +2,7 @@
   "name": "dsc-agent-electron",
   "version": "0.1.1",
   "description": "Tray UI to control dsc-agent.js (non-destructive)",
-  "main": "main.js",
+  "main": "runtime/electron/main.loader.js",
   "private": true,
   "type": "commonjs",
   "author": {
@@ -32,7 +32,7 @@
   },
   "build": {
     "appId": "com.example.dscagent",
-    "productName": "DSC Agent",
+    "productName": "dsc-agent",
     "afterPack": "scripts/apply-fuses.js",
     "files": [
       "package.json",
@@ -58,22 +58,18 @@
         ]
       },
       {
-        "from": "bin/win/",
-        "to": "bin/win/",
+        "from": "../node_modules/pkcs11js",
+        "to": "agent/node_modules/pkcs11js",
         "filter": [
           "**/*"
         ]
       },
       {
-        "from": "bin/mac/",
-        "to": "bin/mac/",
+        "from": "../node_modules/bytenode",
+        "to": "agent/node_modules/bytenode",
         "filter": [
           "**/*"
         ]
-      },
-      {
-        "from": "../dsc-agent.config.json",
-        "to": "dsc-agent.config.json"
       },
       {
         "from": "resources/documents",
@@ -103,12 +99,21 @@
       "icon": "assets/Mac/icon.png",
       "category": "public.app-category.business",
       "identity": null,
+      "extraResources": [
+        {
+          "from": "bin/mac/",
+          "to": "bin/mac/",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ],
       "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] },
-        { "target": "zip", "arch": ["x64", "arm64"] }
+        "dmg"
       ]
     },
     "linux": {
+      "executableName": "dsc-agent-electron",
       "icon": "assets/linux/icon.png",
       "extraResources": [
         {
@@ -124,7 +129,19 @@
         "deb",
         "rpm"
       ],
-      "maintainer": "DSC Agent <support@example.com>"
+      "maintainer": "DSC Agent <support@example.com>",
+      "desktop": {
+        "Name": "DSC Agent",
+        "StartupWMClass": "DSC Agent"
+      }
+    },
+    "deb": {
+      "afterInstall": "scripts/linux/after-install-deb.sh",
+      "afterRemove": "scripts/linux/after-remove-deb.sh"
+    },
+    "rpm": {
+      "afterInstall": "scripts/linux/after-install-rpm.sh",
+      "afterRemove": "scripts/linux/after-remove-rpm.sh"
     }
   }
 }

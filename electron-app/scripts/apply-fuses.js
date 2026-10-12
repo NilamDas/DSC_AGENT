@@ -14,22 +14,38 @@
 
 const path = require('path');
 const fs = require('fs');
-const { flipFuses, FuseVersion, FuseV1Options } = require('@electron/fuses');
+
+// @electron/fuses >=2 is an ESM-only module. electron-builder executes this
+// afterPack hook under the portable Node 18 (which predates Node's require(esm)
+// support), so a static `require('@electron/fuses')` throws ERR_REQUIRE_ESM.
+// Use a dynamic import() instead — supported in all CommonJS modules on Node 18+.
+let _fuses = null;
+async function loadFuses() {
+  if (_fuses) return _fuses;
+  const mod = await import('@electron/fuses');
+  _fuses = { flipFuses: mod.flipFuses, FuseVersion: mod.FuseVersion, FuseV1Options: mod.FuseV1Options };
+  return _fuses;
+}
 
 /**
  * Returns the absolute path to the Electron executable inside the packed output.
  */
-function resolveElectronBinary(appOutDir, platform, productName) {
+function resolveElectronBinary(appOutDir, platform, productName, executableName) {
   if (platform === 'win32') {
-    return path.join(appOutDir, `${productName}.exe`);
+    return path.join(appOutDir, `${executableName}.exe`);
   }
   if (platform === 'darwin') {
-    return path.join(appOutDir, `${productName}.app`, 'Contents', 'MacOS', productName);
+    // macOS uses the productName (with spaces) as the .app and binary name
+    const macName = productName;
+    return path.join(appOutDir, `${macName}.app`, 'Contents', 'MacOS', macName);
   }
-  // Linux — electron-builder lowercases and replaces spaces with hyphens
-  const linuxName = productName.toLowerCase().replace(/\s+/g, '-');
+  // Linux — electron-builder uses the executableName (typically the package
+  // "name" field, lowercased with underscores replaced by hyphens). We check
+  // multiple candidates since it can differ from productName.
   const candidates = [
-    path.join(appOutDir, linuxName),
+    path.join(appOutDir, executableName),
+    path.join(appOutDir, executableName.replace(/_/g, '-')),
+    productName.toLowerCase().replace(/\s+/g, '-'),
     path.join(appOutDir, productName),
   ];
   for (const c of candidates) {
@@ -50,14 +66,20 @@ exports.default = async function afterPack(context) {
     return;
   }
   const productName = context.packager.appInfo.productName;
-  const electronPath = resolveElectronBinary(appOutDir, electronPlatformName, productName);
+  const executableName = context.packager.appInfo.executableName
+    || context.packager.appInfo.sanitizedName
+    || productName.toLowerCase().replace(/\s+/g, '-');
+  console.log(`[fuses] executableName=${executableName} productName=${productName}`);
+  const electronPath = resolveElectronBinary(appOutDir, electronPlatformName, productName, executableName);
 
   if (!fs.existsSync(electronPath)) {
     console.warn(`[fuses] binary not found at ${electronPath} — skipping`);
     return;
   }
 
-  console.log(`[fuses] applying to ${electronPath}`);
+            console.log(`[fuses] applying to ${electronPath}`);
+
+  const { flipFuses, FuseVersion, FuseV1Options } = await loadFuses();
 
   await flipFuses(electronPath, {
     version: FuseVersion.V1,
