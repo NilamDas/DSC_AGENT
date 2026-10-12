@@ -293,7 +293,7 @@ function resolveAgentEntry() {
     return packaged;
   }
 
-  const dev = path.join(__dirname, '..', '..', 'dist', 'agent', 'dsc-agent.loader.js');
+  const dev = path.join(__dirname, '..', '..', '..', 'dist', 'agent', 'dsc-agent.loader.js');
   if (!fs.existsSync(dev)) {
     throw new Error(`Development agent entry not found: ${dev}`);
   }
