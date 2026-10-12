@@ -275,6 +275,12 @@ async function getTokenPresenceCached(dll) {
 
 function translatePkcs11Error(err) {
   const raw = err && err.message ? String(err.message) : String(err || 'Unexpected signing error');
+  if (err && err.code === 'DSC_CERTIFICATE_EXPIRED') {
+    return { status: 400, message: raw };
+  }
+  if (err && err.code === 'DSC_CERTIFICATE_INVALID') {
+    return { status: 400, message: raw };
+  }
   if (err && err.code === 'DSC_TOKEN_MISSING') {
     return { status: 503, message: 'DSC token not detected. Connect the token and try again.' };
   }
