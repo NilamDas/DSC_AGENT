@@ -130,8 +130,8 @@ const [inputFile, outputFile, runtimeKind, runtimePath] = process.argv.slice(1);
 
 Push-Location $repoRoot
 try {
-  $rootEsbuild = Join-Path $repoRoot 'node_modules\.bin\esbuild.cmd'
-  $rootObfuscator = Join-Path $repoRoot 'node_modules\.bin\javascript-obfuscator.cmd'
+  $rootEsbuild = Join-Path $repoRoot 'electron-app\node_modules\.bin\esbuild.cmd'
+  $rootObfuscator = Join-Path $repoRoot 'electron-app\node_modules\.bin\javascript-obfuscator.cmd'
   $electronBuilder = Join-Path $repoRoot 'electron-app\node_modules\.bin\electron-builder.cmd'
   $electronBinary = Join-Path $repoRoot 'electron-app\node_modules\electron\dist\electron.exe'
   $rootNodeModules = Join-Path $repoRoot 'node_modules'
@@ -221,6 +221,7 @@ try {
     '--format=cjs',
     '--target=node18',
     '--external:electron',
+    '--external:electron-updater',
     '--external:./pinPromptServer.loader.js',
     "--outfile=$electronMainBundle"
   )
@@ -286,7 +287,29 @@ try {
     Copy-Item -LiteralPath $electronPackage -Destination $electronPackageBackup -Force
     try {
       Copy-Item -LiteralPath $electronPackageProtected -Destination $electronPackage -Force
-      Invoke-Checked -FilePath $electronBuilder -Arguments @('--win') -WorkingDirectory (Join-Path $repoRoot 'electron-app')
+      $electronBuilderArguments = @('--win')
+      $updateFeedUrl = $env:DSC_UPDATE_FEED_URL
+      if ([string]::IsNullOrWhiteSpace($updateFeedUrl)) {
+        $agentConfigPath = Join-Path $repoRoot 'dsc-agent.config.json'
+        try {
+          $agentConfig = Get-Content -LiteralPath $agentConfigPath -Raw | ConvertFrom-Json
+          $updateFeedUrl = [string]$agentConfig.updateFeedUrl
+        }
+        catch {
+          throw "Unable to read updateFeedUrl from $agentConfigPath`: $($_.Exception.Message)"
+        }
+      }
+      if ([string]::IsNullOrWhiteSpace($updateFeedUrl)) {
+        throw 'Automatic updates require DSC_UPDATE_FEED_URL or updateFeedUrl in dsc-agent.config.json.'
+      }
+      $updateFeedUrl = "$($updateFeedUrl.TrimEnd('/'))/"
+      $electronBuilderArguments += @(
+        '--publish', 'never',
+        '--config.publish.provider=generic',
+        "--config.publish.url=$updateFeedUrl"
+      )
+      Write-Host "Update feed: $updateFeedUrl"
+      Invoke-Checked -FilePath $electronBuilder -Arguments $electronBuilderArguments -WorkingDirectory (Join-Path $repoRoot 'electron-app')
 
       $packagedAgentDir = Join-Path $repoRoot 'electron-app\dist\win-unpacked\resources\agent'
       $requiredPackagedPaths = @(
@@ -294,7 +317,7 @@ try {
         (Join-Path $packagedAgentDir 'dsc-agent.jsc'),
         (Join-Path $packagedAgentDir 'node_modules\bytenode\lib\index.js'),
         (Join-Path $packagedAgentDir 'node_modules\pkcs11js'),
-        (Join-Path $repoRoot 'electron-app\dist\win-unpacked\resources\documents\DSC_AGENT_INTEGRATION_DOCUMENT.docx')
+        (Join-Path $repoRoot 'electron-app\dist\win-unpacked\resources\documents\DSC_AGENT_CLIENT_INSTALLATION_GUIDE.docx')
       )
       $missingPackagedPaths = @($requiredPackagedPaths | Where-Object { -not (Test-Path -LiteralPath $_) })
       if ($missingPackagedPaths.Count -gt 0) {

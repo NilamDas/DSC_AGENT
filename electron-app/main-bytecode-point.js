@@ -6,6 +6,7 @@ const { spawn } = require('child_process');
 const { ensureReady: ensurePinPromptServerReady } = require('./pinPromptServer.loader.js');
 // Linux-specific Chromium sandbox compatibility (deb/rpm/AppImage).
 const { applyLinuxSandboxStrategy } = require('./main/linux/sandbox');
+const { createAutoUpdateController } = require('./main/autoUpdate');
 
 // ---------------------------------------------------------------------------
 // Path resolution for packaged vs dev mode.
@@ -189,6 +190,7 @@ let mainWindowReady = false;
 let pendingControlPanelShow = false;
 let isQuitting = false;
 let lastLogs = [];
+let updateController = null;
 
 // Log file written right next to the executable so you can find it easily
 // e.g. C:\Users\Administrator\AppData\Local\Programs\dsc-agent-electron\electron.log
@@ -566,6 +568,12 @@ function updateTrayMenu() {
     { label: `Agent URL: ${url}`, enabled: false },
     { label: 'View Logs', click: () => dialog.showMessageBox({ type: 'info', title: 'DSC Agent Logs', message: lastLogs.slice(-100).join('\n') }) },
     { type: 'separator' },
+    {
+      label: updateController ? updateController.getMenuLabel() : 'Check for Updates…',
+      enabled: !updateController || !updateController.getMenuLabel().startsWith('Checking'),
+      click: () => updateController && updateController.checkForUpdates({ manual: true })
+    },
+    { type: 'separator' },
     { label: 'Quit', role: 'quit' },
   ]);
   tray.setContextMenu(menu);
@@ -712,6 +720,17 @@ function createAppMenu() {
           }
         }
       ]
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Check for Updates…',
+          click: () => updateController && updateController.checkForUpdates({ manual: true })
+        },
+        { type: 'separator' },
+        { label: `Version ${app.getVersion()}`, enabled: false }
+      ]
     }
   ]
 
@@ -768,7 +787,16 @@ app.whenReady().then(() => {
     icon.setTemplateImage(true);
   }
   tray = new Tray(icon);
+
+  updateController = createAutoUpdateController({
+    app,
+    dialog,
+    log: LOG,
+    getMainWindow: () => mainWindow,
+    onStateChange: () => updateTrayMenu(),
+  });
   updateTrayMenu();
+  updateController.start();
 
   // Open control panel on left-click (Windows/Linux) or double-click
   tray.on('click', () => showControlPanel());
@@ -800,6 +828,7 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  if (updateController) updateController.stop();
   // Forcefully kill the agent child process synchronously so no orphan remains
   if (agentProc) {
     const pid = agentProc.pid;
