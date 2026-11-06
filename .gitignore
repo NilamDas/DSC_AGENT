@@ -11,3 +11,5 @@ client/dsc-agent-config.js
 /dist
 /electron-app/build-artifacts
 Agent_files/eSwakshar-Agent-macOS.dmg
+package-lock.json
+package.json
