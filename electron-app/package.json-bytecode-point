@@ -1,6 +1,6 @@
 {
   "name": "dsc-agent-electron",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Tray UI to control dsc-agent.js (non-destructive)",
   "main": "runtime/electron/main.loader.js",
   "private": true,
@@ -21,7 +21,8 @@
     "build:linux": "electron-builder --linux"
   },
   "dependencies": {
-    "bytenode": "^1.5.7"
+    "bytenode": "^1.5.7",
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "@electron/fuses": "^2.1.1",
@@ -98,7 +99,6 @@
     "mac": {
       "icon": "assets/Mac/icon.png",
       "category": "public.app-category.business",
-      "identity": null,
       "extraResources": [
         {
           "from": "bin/mac/",
@@ -109,7 +109,8 @@
         }
       ],
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ]
     },
     "linux": {

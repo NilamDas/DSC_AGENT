@@ -138,6 +138,7 @@ echo "==> Bundling Electron files..."
 "$ROOT_ESBUILD" electron-app/main-bytecode-point.js \
   --bundle --platform=node --format=cjs --target=node18 \
   --external:electron \
+  --external:electron-updater \
   --external:./pinPromptServer.loader.js \
   --outfile=electron-app/build-artifacts/main.bundle.js
 
@@ -186,9 +187,18 @@ cp electron-app/package.json electron-app/package.json.bak
 cp electron-app/package.json-bytecode-point electron-app/package.json
 
 # Run electron-builder from inside electron-app/ so all relative paths resolve correctly.
+ELECTRON_BUILDER_ARGS=(--mac "$ELECTRON_ARCH_FLAG")
+if [ -n "${DSC_UPDATE_FEED_URL:-}" ]; then
+  UPDATE_FEED_URL="${DSC_UPDATE_FEED_URL%/}/"
+  ELECTRON_BUILDER_ARGS+=(--publish never --config.publish.provider=generic "--config.publish.url=$UPDATE_FEED_URL")
+  echo "Update feed: $UPDATE_FEED_URL"
+else
+  echo "WARNING: DSC_UPDATE_FEED_URL is not set; this build will not contain automatic-update metadata."
+fi
+
 pushd electron-app > /dev/null
-CSC_IDENTITY_AUTO_DISCOVERY=false \
-  "$ELECTRON_BUILDER" --mac "$ELECTRON_ARCH_FLAG" || {
+CSC_IDENTITY_AUTO_DISCOVERY="${CSC_IDENTITY_AUTO_DISCOVERY:-false}" \
+  "$ELECTRON_BUILDER" "${ELECTRON_BUILDER_ARGS[@]}" || {
     popd > /dev/null
     mv "$REPO_ROOT/electron-app/package.json.bak" "$REPO_ROOT/electron-app/package.json"
     echo "electron-builder failed"

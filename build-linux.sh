@@ -165,6 +165,7 @@ echo "==> Bundling Electron files..."
 "$ROOT_ESBUILD" electron-app/main-bytecode-point.js \
   --bundle --platform=node --format=cjs --target=node18 \
   --external:electron \
+  --external:electron-updater \
   --external:./pinPromptServer.loader.js \
   --outfile=electron-app/build-artifacts/main.bundle.js
 
@@ -219,11 +220,20 @@ cp electron-app/package.json-bytecode-point electron-app/package.json
 # `/usr/bin/env node` fails with "node: No such file or directory". We therefore
 # invoke the CLI explicitly through the portable Node 18 downloaded above, and
 # prepend its directory to PATH so any spawned helper scripts resolve it too.
+ELECTRON_BUILDER_ARGS=(--linux "$ELECTRON_ARCH_FLAG")
+if [ -n "${DSC_UPDATE_FEED_URL:-}" ]; then
+  UPDATE_FEED_URL="${DSC_UPDATE_FEED_URL%/}/"
+  ELECTRON_BUILDER_ARGS+=(--publish never --config.publish.provider=generic "--config.publish.url=$UPDATE_FEED_URL")
+  echo "Update feed: $UPDATE_FEED_URL"
+else
+  echo "WARNING: DSC_UPDATE_FEED_URL is not set; this build will not contain automatic-update metadata."
+fi
+
 pushd electron-app > /dev/null
 env -u ELECTRON_RUN_AS_NODE \
   PATH="$NODE_DIR:$PATH" \
   CSC_IDENTITY_AUTO_DISCOVERY=false \
-    "$NODE_BIN" "$ELECTRON_BUILDER" --linux "$ELECTRON_ARCH_FLAG" || {
+    "$NODE_BIN" "$ELECTRON_BUILDER" "${ELECTRON_BUILDER_ARGS[@]}" || {
   popd > /dev/null
   mv "$REPO_ROOT/electron-app/package.json.bak" "$REPO_ROOT/electron-app/package.json"
   echo "electron-builder failed"
