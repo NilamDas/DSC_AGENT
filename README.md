@@ -1,5 +1,8 @@
 # DSC Agent
 
+Automatic application updates are supported for packaged builds. See
+[AUTO_UPDATES.md](AUTO_UPDATES.md) for update-server setup and release steps.
+
 
 
 ## Getting started

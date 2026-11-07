@@ -1,6 +1,6 @@
 {
   "name": "dsc-agent-electron",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Tray UI to control dsc-agent.js (non-destructive)",
   "main": "runtime/electron/main.loader.js",
   "private": true,
@@ -12,6 +12,14 @@
   },
   "homepage": "https://example.com/dsc-agent",
   "icon": "assets/icon.png",
+  "scripts": {
+    "dev": "npm --prefix electron-app run dev",
+    "electron": "npm --prefix electron-app run electron",
+    "build": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\build-protected.ps1",
+    "build:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\build-protected.ps1",
+    "build:mac": "bash build-mac.sh",
+    "build:linux": "bash build-linux.sh"
+  },
   "dependencies": {
     "@signpdf/placeholder-pdf-lib": "^3.3.0",
     "@signpdf/placeholder-plain": "^3.3.0",
@@ -21,7 +29,9 @@
     "bytenode": "^1.5.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
+    "esbuild": "^0.28.2",
     "express": "^5.2.1",
+    "javascript-obfuscator": "^5.9.0",
     "multer": "^2.2.0",
     "pdf-lib": "^1.17.1",
     "pkcs11js": "^2.1.7",

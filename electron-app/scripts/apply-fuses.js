@@ -32,7 +32,12 @@ async function loadFuses() {
  */
 function resolveElectronBinary(appOutDir, platform, productName, executableName) {
   if (platform === 'win32') {
-    return path.join(appOutDir, `${executableName}.exe`);
+    const candidates = [
+      path.join(appOutDir, `${executableName}.exe`),
+      path.join(appOutDir, `${productName}.exe`),
+      path.join(appOutDir, `${productName.replace(/\s+/g, '-')}.exe`),
+    ];
+    return candidates.find(candidate => fs.existsSync(candidate)) || candidates[0];
   }
   if (platform === 'darwin') {
     // macOS uses the productName (with spaces) as the .app and binary name
@@ -45,7 +50,7 @@ function resolveElectronBinary(appOutDir, platform, productName, executableName)
   const candidates = [
     path.join(appOutDir, executableName),
     path.join(appOutDir, executableName.replace(/_/g, '-')),
-    productName.toLowerCase().replace(/\s+/g, '-'),
+    path.join(appOutDir, productName.toLowerCase().replace(/\s+/g, '-')),
     path.join(appOutDir, productName),
   ];
   for (const c of candidates) {
